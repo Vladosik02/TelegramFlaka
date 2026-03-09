@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  trainer-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trainer-bot:latest
+    container_name: trainer_bot
+    restart: unless-stopped
+
+    # Переменные среды — из файла .env на сервере
+    env_file: .env
+
+    # Часовой пояс — важно для APScheduler
+    environment:
+      - TZ=Europe/Warsaw
+
+    # Persistent volumes: БД и бэкапы не теряются при пересборке
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+
+    # Ограничение ресурсов (подходит для Hetzner CX11 / DO $4)
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
