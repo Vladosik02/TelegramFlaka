@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import TELEGRAM_TOKEN
 from db.connection import init_db, close_connection
-from bot.commands import cmd_start, cmd_stop, cmd_stats, cmd_mode, cmd_help, cmd_reset, cmd_export
+from bot.commands import cmd_start, cmd_stop, cmd_stats, cmd_mode, cmd_help, cmd_reset, cmd_export, cmd_profile, cmd_test, cmd_plan
 from bot.handlers import handle_message, handle_callback, handle_voice
 from scheduler.jobs import setup_scheduler
 
@@ -48,8 +48,11 @@ def main() -> None:
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("mode",  cmd_mode))
     app.add_handler(CommandHandler("help",  cmd_help))
-    app.add_handler(CommandHandler("reset",  cmd_reset))
-    app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("reset",   cmd_reset))
+    app.add_handler(CommandHandler("export",  cmd_export))
+    app.add_handler(CommandHandler("profile", cmd_profile))
+    app.add_handler(CommandHandler("test",    cmd_test))
+    app.add_handler(CommandHandler("plan",    cmd_plan))
 
     # ── 4. Текстовые сообщения ────────────────────────────────────────────────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -63,6 +66,7 @@ def main() -> None:
     # ── 6. Scheduler ─────────────────────────────────────────────────────────
     scheduler = AsyncIOScheduler()
     bot = app.bot
+    app.bot_data["scheduler"] = scheduler   # для snooze в handlers
     setup_scheduler(scheduler, bot)
     scheduler.start()
     logger.info("Scheduler started")

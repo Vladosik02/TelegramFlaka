@@ -145,6 +145,19 @@ async def send_weekly_report(bot: Bot, telegram_id: int) -> None:
     logger.info(f"Weekly report sent to {telegram_id}")
 
 
+async def send_snooze_reminder(bot: Bot, telegram_id: int) -> None:
+    """Одноразовое напоминание через 30 мин после нажатия snooze."""
+    try:
+        await bot.send_message(
+            chat_id=telegram_id,
+            text="⏰ Прошло 30 минут. Ещё не поздно потренироваться! 💪",
+            reply_markup=kb_reminder(),
+        )
+        logger.info(f"Snooze reminder sent to {telegram_id}")
+    except Exception as e:
+        logger.error(f"Snooze reminder failed for {telegram_id}: {e}")
+
+
 async def check_and_send_reminders(bot: Bot) -> None:
     """Отправить все просроченные напоминания."""
     users = _get_all_active_users()
@@ -307,3 +320,777 @@ async def broadcast_l4_intelligence() -> None:
         except Exception as e:
             logger.error(f"[L4] Broadcast failed for {user['telegram_id']}: {e}")
     logger.info("[L4] Intelligence broadcast complete")
+
+
+# ─── Daily Summary (Фаза 7) ───────────────────────────────────────────────
+
+_DAILY_SYSTEM = (
+    "Ты — аналитик личного тренера. Пиши кратко и фактически. "
+    "Без приветствий и вступлений. Только по делу."
+)
+
+_DAILY_SUMMARY_PROMPT = """\
+Составь краткое дневное резюме для атлета на основе данных за {date}.
+
+Данные дня:
+Тренировка: {workout_info}
+Питание: {nutrition_info}
+Метрики: {metrics_info}
+
+Требования к ответу (строго):
+РЕЗЮМЕ: <2–3 предложения о дне — что было, ключевые цифры, общий тон>
+ИНСАЙТ: <одна конкретная рекомендация или наблюдение на завтра>
+
+Пиши в прошедшем времени, без воды."""
+
+
+def _format_workout_info(workout: dict | None) -> str:
+    if not workout:
+        return "не было"
+    parts = []
+    if workout.get("type"):
+        parts.append(workout["type"])
+    if workout.get("duration_min"):
+        parts.append(f"{workout['duration_min']} мин")
+    if workout.get("intensity"):
+        parts.append(f"интенсивность {workout['intensity']}/10")
+    if not workout.get("completed"):
+        parts.append("(не завершена)")
+    return ", ".join(parts) if parts else "была"
+
+
+def _format_nutrition_info(nutrition: dict | None, goal_calories: int | None) -> str:
+    if not nutrition:
+        return "нет данных"
+    parts = []
+    if nutrition.get("calories"):
+        cal = nutrition["calories"]
+        parts.append(f"{cal} ккал")
+        if goal_calories and goal_calories > 0:
+            pct = round(cal / goal_calories * 100)
+            parts.append(f"({pct}% от цели)")
+    if nutrition.get("protein_g"):
+        parts.append(f"Б{nutrition['protein_g']}г")
+    if nutrition.get("water_ml"):
+        parts.append(f"вода {nutrition['water_ml'] // 1000:.1f}л")
+    if nutrition.get("junk_food"):
+        parts.append("🍔 был читмил")
+    return ", ".join(parts) if parts else "нет данных"
+
+
+def _format_metrics_info(metrics: dict | None) -> str:
+    if not metrics:
+        return "нет данных"
+    parts = []
+    if metrics.get("energy"):
+        parts.append(f"энергия {metrics['energy']}/5")
+    if metrics.get("mood"):
+        parts.append(f"настроение {metrics['mood']}/5")
+    if metrics.get("sleep_hours"):
+        parts.append(f"сон {metrics['sleep_hours']}ч")
+    if metrics.get("steps"):
+        parts.append(f"{metrics['steps']} шагов")
+    return ", ".join(parts) if parts else "нет данных"
+
+
+def _parse_daily_response(text: str) -> dict:
+    """Парсит структурированный ответ AI для daily summary."""
+    result = {"summary_text": None, "key_insight": None}
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("РЕЗЮМЕ:"):
+            result["summary_text"] = line[len("РЕЗЮМЕ:"):].strip()
+        elif line.startswith("ИНСАЙТ:"):
+            result["key_insight"] = line[len("ИНСАЙТ:"):].strip()
+    # Fallback: если парсинг не сработал, берём весь текст
+    if not result["summary_text"]:
+        result["summary_text"] = text.strip()[:300]
+    return result
+
+
+async def generate_daily_summary_for_user(uid: int, telegram_id: int) -> None:
+    """
+    Генерирует AI-резюме дня и сохраняет в daily_summary.
+    Вызывается из scheduler после вечернего чек-ина (~23:00).
+    """
+    from ai.client import get_client
+    from config import MODEL
+    from db.queries.workouts import get_today_workout, get_metrics_range
+    from db.queries.nutrition import get_today_nutrition
+    from db.queries.memory import get_l2_brief
+    from db.queries.daily_summary import upsert_daily_summary
+
+    user = get_user(telegram_id)
+    if not user:
+        return
+
+    today = datetime.date.today().isoformat()
+
+    # Собираем данные дня
+    workout   = get_today_workout(uid)
+    nutrition = get_today_nutrition(uid)
+    metrics_list = get_metrics_range(uid, days=1)
+    metrics   = metrics_list[0] if metrics_list else None
+    l2        = get_l2_brief(uid)
+    goal_cal  = l2.get("daily_calories") if l2 else None
+
+    # Флаги для структурированных полей
+    workout_done = bool(workout and workout.get("completed"))
+    calories_met = False
+    if nutrition and nutrition.get("calories") and goal_cal:
+        ratio = nutrition["calories"] / goal_cal
+        calories_met = (0.85 <= ratio <= 1.15)
+
+    # Формируем промпт
+    prompt = _DAILY_SUMMARY_PROMPT.format(
+        date=today,
+        workout_info=_format_workout_info(workout),
+        nutrition_info=_format_nutrition_info(nutrition, goal_cal),
+        metrics_info=_format_metrics_info(metrics),
+    )
+
+    try:
+        client = get_client()
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=200,
+            system=_DAILY_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        parsed = _parse_daily_response(raw)
+
+        upsert_daily_summary(
+            user_id=uid,
+            date=today,
+            summary_text=parsed["summary_text"] or raw,
+            workout_done=workout_done,
+            calories_met=calories_met,
+            mood_score=metrics.get("mood") if metrics else None,
+            energy_score=metrics.get("energy") if metrics else None,
+            sleep_hours=metrics.get("sleep_hours") if metrics else None,
+            key_insight=parsed.get("key_insight"),
+        )
+        logger.info(f"[DAILY_SUMMARY] Generated for user_id={uid} date={today}")
+
+    except Exception as e:
+        logger.error(f"[DAILY_SUMMARY] Failed for uid={uid}: {e}")
+
+
+async def broadcast_daily_summary() -> None:
+    """Ежедневная генерация резюме для всех активных пользователей."""
+    users = _get_all_active_users()
+    logger.info(f"[DAILY_SUMMARY] Generating for {len(users)} users")
+    for user in users:
+        if _should_silence(user):
+            continue
+        try:
+            await generate_daily_summary_for_user(user["id"], user["telegram_id"])
+        except Exception as e:
+            logger.error(f"[DAILY_SUMMARY] Broadcast failed for {user['telegram_id']}: {e}")
+    logger.info("[DAILY_SUMMARY] Broadcast complete")
+
+
+# ─── Monthly Summary (Фаза 8.1) ───────────────────────────────────────────
+
+_MONTHLY_SUMMARY_SYSTEM = (
+    "Ты — аналитик данных персонального тренера. "
+    "Пиши коротко, конкретно, с цифрами. Без приветствий и вступлений. "
+    "Только факты и выводы, которые помогут в следующем месяце."
+)
+
+_MONTHLY_SUMMARY_PROMPT = """\
+Проанализируй данные атлета за {month_name} {year} и напиши отчёт.
+
+Данные месяца:
+Тренировок завершено: {workouts_done} (из {workouts_total} сессий)
+Средняя интенсивность: {avg_intensity}
+Средний сон: {avg_sleep}
+Средняя энергия: {avg_energy}
+Среднее питание: {avg_calories}
+Лучший рекорд месяца: {best_pr}
+Цель атлета: {goal}
+
+{prev_context}
+
+Формат ответа (строго, каждый тег с новой строки):
+РЕЗЮМЕ: <2–3 предложения — что было сделано, ключевые цифры месяца>
+ТРЕНД: <1 предложение — как этот месяц соотносится с предыдущим>
+ИНСАЙТ: <1 конкретная рекомендация на следующий месяц>"""
+
+_MONTH_NAMES_RU = {
+    1: "январь", 2: "февраль", 3: "март", 4: "апрель",
+    5: "май", 6: "июнь", 7: "июль", 8: "август",
+    9: "сентябрь", 10: "октябрь", 11: "ноябрь", 12: "декабрь",
+}
+
+
+def _prev_month(year: int, month: int) -> tuple[int, int]:
+    """Возвращает (year, month) предыдущего месяца."""
+    if month == 1:
+        return year - 1, 12
+    return year, month - 1
+
+
+def _parse_monthly_response(text: str) -> dict:
+    """Парсит структурированный ответ AI для monthly_summary."""
+    result = {"summary_text": None, "trend_vs_prev": None, "key_insight": None}
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("РЕЗЮМЕ:"):
+            result["summary_text"] = line[len("РЕЗЮМЕ:"):].strip()
+        elif line.startswith("ТРЕНД:"):
+            result["trend_vs_prev"] = line[len("ТРЕНД:"):].strip()
+        elif line.startswith("ИНСАЙТ:"):
+            result["key_insight"] = line[len("ИНСАЙТ:"):].strip()
+    # Fallback: если парсинг не сработал — весь текст как резюме
+    if not result["summary_text"]:
+        result["summary_text"] = text.strip()[:400]
+    return result
+
+
+async def generate_monthly_summary_for_user(uid: int, telegram_id: int) -> None:
+    """
+    Генерирует AI-резюме прошедшего месяца и сохраняет в monthly_summary.
+    Вызывается из scheduler 1-го числа в 09:00.
+    Если данных за месяц нет — пропускает без ошибки.
+    """
+    from ai.client import get_client
+    from config import MODEL
+    from db.queries.stats import get_monthly_stats
+    from db.queries.monthly_summary import upsert_monthly_summary, get_month_summary
+    from db.queries.memory import get_l2_brief
+
+    user = get_user(telegram_id)
+    if not user:
+        return
+
+    # Прошедший месяц (вызов идёт 1-го числа — смотрим назад)
+    today = datetime.date.today()
+    prev_y, prev_m = _prev_month(today.year, today.month)
+    month_str = f"{prev_y:04d}-{prev_m:02d}"
+    month_name = _MONTH_NAMES_RU[prev_m]
+
+    # Агрегаты за месяц
+    stats = get_monthly_stats(uid, prev_y, prev_m)
+
+    # Нет данных — пропускаем
+    if stats["workouts_done"] == 0 and stats["avg_sleep"] is None:
+        logger.info(f"[MONTHLY_SUMMARY] No data for uid={uid} month={month_str}, skipping")
+        return
+
+    # Цель питания для контекста
+    l2 = get_l2_brief(uid)
+    goal_calories = l2.get("daily_calories") if l2 else None
+
+    # Контекст предыдущего месяца для сравнения
+    pp_y, pp_m = _prev_month(prev_y, prev_m)
+    prev_summary = get_month_summary(uid, f"{pp_y:04d}-{pp_m:02d}")
+    prev_context = ""
+    if prev_summary and prev_summary.get("summary_text"):
+        prev_mn = _MONTH_NAMES_RU.get(pp_m, str(pp_m))
+        prev_context = (
+            f"Данные предыдущего месяца ({prev_mn}):\n"
+            f"Тренировок: {prev_summary['workouts_done']}, "
+            f"сон: {prev_summary.get('avg_sleep') or 'н/д'} ч, "
+            f"энергия: {prev_summary.get('avg_energy') or 'н/д'}/5\n"
+            f"Резюме: {prev_summary['summary_text'][:150]}"
+        )
+
+    def _fmt(val, suffix="", default="нет данных"):
+        return f"{val}{suffix}" if val is not None else default
+
+    avg_cal_str = (
+        f"{stats['avg_calories']} ккал (цель: {goal_calories} ккал)"
+        if stats["avg_calories"] and goal_calories
+        else _fmt(stats["avg_calories"], " ккал")
+    )
+
+    prompt = _MONTHLY_SUMMARY_PROMPT.format(
+        month_name=month_name,
+        year=prev_y,
+        workouts_done=stats["workouts_done"],
+        workouts_total=stats["workouts_total"],
+        avg_intensity=_fmt(stats["avg_intensity"], "/10"),
+        avg_sleep=_fmt(stats["avg_sleep"], " ч"),
+        avg_energy=_fmt(stats["avg_energy"], "/5"),
+        avg_calories=avg_cal_str,
+        best_pr=stats["best_pr"]["text"] if stats.get("best_pr") else "нет рекордов",
+        goal=user.get("goal") or "улучшить форму",
+        prev_context=prev_context,
+    )
+
+    try:
+        client = get_client()
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=300,
+            system=_MONTHLY_SUMMARY_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        parsed = _parse_monthly_response(raw)
+
+        upsert_monthly_summary(
+            user_id=uid,
+            month=month_str,
+            workouts_done=stats["workouts_done"],
+            workouts_total=stats["workouts_total"],
+            avg_intensity=stats["avg_intensity"],
+            avg_sleep=stats["avg_sleep"],
+            avg_energy=stats["avg_energy"],
+            avg_calories=stats["avg_calories"],
+            best_exercise=stats["best_pr"]["exercise"] if stats.get("best_pr") else None,
+            best_pr_text=stats["best_pr"]["text"] if stats.get("best_pr") else None,
+            summary_text=parsed["summary_text"],
+            trend_vs_prev=parsed["trend_vs_prev"],
+            key_insight=parsed["key_insight"],
+        )
+        logger.info(f"[MONTHLY_SUMMARY] Generated for uid={uid} month={month_str}")
+
+    except Exception as e:
+        logger.error(f"[MONTHLY_SUMMARY] Failed for uid={uid} month={month_str}: {e}")
+
+
+async def broadcast_monthly_summary() -> None:
+    """Месячная генерация резюме для всех активных пользователей (1-е число, 09:00)."""
+    users = _get_all_active_users()
+    logger.info(f"[MONTHLY_SUMMARY] Generating for {len(users)} users")
+    for user in users:
+        try:
+            await generate_monthly_summary_for_user(user["id"], user["telegram_id"])
+        except Exception as e:
+            logger.error(f"[MONTHLY_SUMMARY] Broadcast failed for {user['telegram_id']}: {e}")
+    logger.info("[MONTHLY_SUMMARY] Broadcast complete")
+
+
+# ─── Training Plan — Фаза 8.3 ─────────────────────────────────────────────
+
+_PLAN_SYSTEM = (
+    "Ты — Алекс, профессиональный тренер-коуч. "
+    "Пиши строго по заданному формату. "
+    "Только ПЛАН (JSON) и ОБОСНОВАНИЕ — никакого другого текста."
+)
+
+_WEEKDAYS_RU = {0: "Пн", 1: "Вт", 2: "Ср", 3: "Чт", 4: "Пт", 5: "Сб", 6: "Вс"}
+
+
+def _parse_plan_response(text: str) -> tuple[str | None, str | None]:
+    """
+    Парсит ответ AI: возвращает (plan_json_str, rationale).
+    Использует подсчёт скобок для корректного извлечения вложенного JSON
+    (простая regex ломается на nested arrays в exercises).
+    """
+    import re
+    plan_json_str = None
+    rationale = None
+
+    # ── Извлекаем JSON-массив с учётом вложенных скобок ──────────────────────
+    plan_marker = text.find("ПЛАН:")
+    if plan_marker != -1:
+        bracket_start = text.find("[", plan_marker)
+        if bracket_start != -1:
+            depth = 0
+            for i, ch in enumerate(text[bracket_start:], bracket_start):
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        plan_json_str = text[bracket_start:i + 1].strip()
+                        break
+
+    # ── Ищем блок ОБОСНОВАНИЕ: ───────────────────────────────────────────────
+    rat_match = re.search(r"ОБОСНОВАНИЕ:\s*(.+?)(?:\Z)", text, re.DOTALL)
+    if rat_match:
+        rationale = rat_match.group(1).strip()
+
+    return plan_json_str, rationale
+
+
+def _format_plan_message(plan: dict) -> str:
+    """
+    Форматирует тренировочный план как Telegram-сообщение (MarkdownV2-safe).
+    Вызывается при отправке плана пользователю и в /plan.
+    """
+    import json as _json
+    try:
+        days = _json.loads(plan["plan_json"])
+    except Exception:
+        return "❌ Ошибка чтения плана."
+
+    week_start = plan.get("week_start", "")
+    plan_id = plan.get("plan_id", "")
+    workouts_done = plan.get("workouts_completed", 0)
+    workouts_total = plan.get("workouts_planned", 0)
+    rationale = plan.get("ai_rationale", "")
+
+    try:
+        d = datetime.date.fromisoformat(week_start)
+        d_end = d + datetime.timedelta(days=6)
+        week_label = f"{d.strftime('%d.%m')} – {d_end.strftime('%d.%m.%Y')}"
+    except Exception:
+        week_label = week_start
+
+    type_icons = {
+        "strength": "💪", "cardio": "🏃", "hiit": "⚡",
+        "mobility": "🧘", "rest": "😴", "recovery": "🌿",
+    }
+
+    lines = [
+        f"📋 *Тренировочный план* ({week_label})",
+        f"ID: `{plan_id}`",
+    ]
+    if workouts_total > 0:
+        progress_bar = "✅" * workouts_done + "⬜" * (workouts_total - workouts_done)
+        lines.append(f"Прогресс: {progress_bar} {workouts_done}/{workouts_total}")
+    lines.append("━━━━━━━━━━━━━━━━━")
+
+    for day in days:
+        dtype = day.get("type", "rest")
+        icon = type_icons.get(dtype, "📅")
+        weekday = day.get("weekday", "")
+        label = day.get("label", dtype)
+        date_str = day.get("date", "")
+        try:
+            date_fmt = datetime.date.fromisoformat(date_str).strftime("%d.%m")
+        except Exception:
+            date_fmt = date_str
+        completed = day.get("completed", False)
+        done_mark = "✅ " if completed else ""
+
+        lines.append(f"\n{done_mark}*{weekday} {date_fmt}* — {icon} {label}")
+
+        exercises = day.get("exercises") or []
+        for ex in exercises:
+            name = ex.get("name", "")
+            sets = ex.get("sets")
+            reps = ex.get("reps")
+            weight = ex.get("weight_kg_target")
+            note = ex.get("note", "")
+            parts = [f"• {name}"]
+            if sets and reps:
+                parts.append(f"{sets}×{reps}")
+            if weight:
+                parts.append(f"@ {weight} кг")
+            if note:
+                parts.append(f"_{note}_")
+            lines.append(" ".join(parts))
+
+        ai_note = day.get("ai_note", "")
+        if ai_note:
+            lines.append(f"  💬 _{ai_note}_")
+
+    if rationale:
+        lines += ["━━━━━━━━━━━━━━━━━", f"💡 {rationale}"]
+
+    return "\n".join(lines)
+
+
+async def archive_weekly_plan_for_user(uid: int) -> None:
+    """
+    Архивирует активный план текущей недели для пользователя.
+    Считает реально выполненные тренировки из таблицы workouts.
+    Вызывается каждое воскресенье в 19:00 (до генерации нового плана).
+    """
+    from db.queries.training_plan import get_active_plan, archive_plan
+    from db.connection import get_connection
+
+    plan = get_active_plan(uid)
+    if not plan:
+        return
+
+    plan_id = plan["plan_id"]
+    workouts_planned = plan.get("workouts_planned") or 0
+    week_start = plan["week_start"]
+
+    # Считаем выполненные тренировки за эту неделю из таблицы workouts
+    # (по полю plan_id если есть, иначе по дате)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM workouts WHERE plan_id = ? AND completed = 1",
+            (plan_id,),
+        ).fetchone()
+        workouts_completed = row["cnt"] if row else 0
+    except Exception:
+        # план_id колонки ещё нет — fallback по дате
+        if workouts_planned > 0:
+            week_end = (
+                datetime.date.fromisoformat(week_start) + datetime.timedelta(days=6)
+            ).isoformat()
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM workouts WHERE user_id = ? AND date >= ? AND date <= ? AND completed = 1",
+                (uid, week_start, week_end),
+            ).fetchone()
+            workouts_completed = row["cnt"] if row else 0
+        else:
+            workouts_completed = 0
+
+    completion_pct = (
+        round(workouts_completed / workouts_planned * 100, 1)
+        if workouts_planned > 0 else 0.0
+    )
+
+    archive_plan(plan_id, workouts_completed, completion_pct)
+    logger.info(
+        f"[PLAN] Archived for uid={uid} plan_id={plan_id} "
+        f"done={workouts_completed}/{workouts_planned} pct={completion_pct:.0f}%"
+    )
+
+
+async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None:
+    """
+    Генерирует AI-план на следующую неделю и отправляет пользователю.
+    Вызывается каждое воскресенье в 20:00 из scheduler.
+    """
+    from ai.client import get_client
+    from config import MODEL
+    from db.queries.training_plan import (
+        save_training_plan, get_next_week_start, make_plan_id,
+    )
+    from db.queries.memory import (
+        get_l0_surface, get_l1_deep_bio,
+        get_l2_brief, get_l3_deep, get_l4_intelligence,
+    )
+    from db.queries.workouts import get_weekly_stats, get_streak, get_metrics_range
+    from db.queries.exercises import get_recent_records
+    from db.queries.fitness_metrics import get_fitness_score, get_fitness_level
+
+    user = get_user(telegram_id)
+    if not user or not user["active"]:
+        return
+
+    week_start = get_next_week_start()
+    week_end = (
+        datetime.date.fromisoformat(week_start) + datetime.timedelta(days=6)
+    ).isoformat()
+
+    # ── Собираем данные ────────────────────────────────────────────────────
+    surface  = get_l0_surface(uid)  or {}
+    bio      = get_l1_deep_bio(uid) or {}
+    l2       = get_l2_brief(uid)    or {}
+    l3       = get_l3_deep(uid)     or {}
+    l4       = get_l4_intelligence(uid) or {}
+    streak   = get_streak(uid)
+    weekly   = get_weekly_stats(uid)
+    metrics  = get_metrics_range(uid, days=7)
+
+    fs = get_fitness_score(uid)
+    fitness_score_str = (
+        f"{fs['score']:.0f}/100 — {get_fitness_level(fs['score'])} (тест {fs['tested_at']})"
+        if fs else "нет данных"
+    )
+
+    # Средние за 7 дней
+    sleeps   = [m["sleep_hours"] for m in metrics if m.get("sleep_hours")]
+    energies = [m["energy"]      for m in metrics if m.get("energy")]
+    avg_sleep  = round(sum(sleeps)   / len(sleeps),   1) if sleeps   else None
+    avg_energy = round(sum(energies) / len(energies), 1) if energies else None
+
+    # Личные рекорды последних 30 дней
+    recent_prs = get_recent_records(uid, days=30)
+    prs_str = "нет новых рекордов"
+    if recent_prs:
+        pr_lines = []
+        for pr in recent_prs[:5]:
+            suffix_map = {"weight": " кг", "reps": " повт", "time": " сек"}
+            suffix = suffix_map.get(pr.get("record_type", ""), "")
+            improvement = f" (+{pr['improvement_pct']:.0f}%)" if pr.get("improvement_pct") else ""
+            pr_lines.append(f"  🏆 {pr['exercise_name']}: {pr['record_value']}{suffix}{improvement}")
+        prs_str = "\n".join(pr_lines)
+
+    # Физические данные
+    phys_parts = []
+    if surface.get("age"):       phys_parts.append(f"Возраст: {surface['age']} лет")
+    if surface.get("height_cm"): phys_parts.append(f"Рост: {surface['height_cm']} см")
+    physical_data = "\n".join(phys_parts) if phys_parts else "нет данных"
+
+    # Тренировочные предпочтения
+    train_parts = []
+    if l3.get("preferred_days"):  train_parts.append(f"Предпочтительные дни: {', '.join(l3['preferred_days'])}")
+    if l3.get("preferred_time"):  train_parts.append(f"Время: {l3['preferred_time']}")
+    if l3.get("avg_session_min"): train_parts.append(f"Длительность сессии: {l3['avg_session_min']} мин")
+    if l3.get("current_program"): train_parts.append(f"Текущая программа: {l3['current_program']}")
+    training_prefs = "\n".join(train_parts) if train_parts else "нет данных"
+
+    # Питание
+    nut_parts = []
+    if l2.get("daily_calories"): nut_parts.append(f"{l2['daily_calories']} ккал")
+    if l2.get("protein_g"):      nut_parts.append(f"Б{l2['protein_g']}г")
+    if l2.get("fat_g"):          nut_parts.append(f"Ж{l2['fat_g']}г")
+    if l2.get("carbs_g"):        nut_parts.append(f"У{l2['carbs_g']}г")
+    nutrition_data = " / ".join(nut_parts) if nut_parts else "нет данных"
+
+    # Здоровье
+    health_parts = []
+    if user.get("injuries"):
+        try:
+            import json as _j
+            inj = _j.loads(user["injuries"])
+            if inj: health_parts.append(f"Травмы/ограничения: {', '.join(inj)}")
+        except Exception:
+            pass
+    if bio.get("food_intolerances"):
+        health_parts.append(f"Непереносимости: {', '.join(bio['food_intolerances'])}")
+    health_data = "\n".join(health_parts) if health_parts else "нет ограничений"
+
+    # Избегаемые упражнения
+    avoided = ", ".join(l3.get("avoided_exercises") or []) or "нет"
+
+    # Preferred days
+    preferred_days = ", ".join(l3.get("preferred_days") or []) or "любые"
+    session_min = l3.get("avg_session_min") or 60
+
+    # Параметры плана — зависят от уровня
+    level = user.get("fitness_level", "beginner")
+    min_workouts, max_workouts = {"beginner": (3, 4), "intermediate": (4, 5), "advanced": (4, 6)}.get(level, (3, 5))
+
+    # Сезон
+    season_map = {"bulk": "набор массы", "cut": "сушка", "maintain": "поддержание", "peak": "пик формы"}
+    season_str = season_map.get(surface.get("season", "maintain"), "поддержание")
+
+    # L4 дайджест
+    l4_digest = l4.get("weekly_digest") or "нет данных"
+    obs = l4.get("ai_observations")
+    if obs:
+        l4_digest += f"\nНаблюдения: {'; '.join(obs[-2:])}"
+
+    # ── Формируем промпт ───────────────────────────────────────────────────
+    from config import PROMPTS_DIR
+    import os
+    prompt_path = os.path.join(PROMPTS_DIR, "training_plan.txt")
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        template = f.read()
+
+    prompt = template.format(
+        week_start=week_start,
+        week_end=week_end,
+        name=user.get("name") or "атлет",
+        goal=user.get("goal") or "улучшить форму",
+        fitness_level=level,
+        season=season_str,
+        fitness_score=fitness_score_str,
+        streak=streak,
+        physical_data=physical_data,
+        training_prefs=training_prefs,
+        nutrition_data=nutrition_data,
+        health_data=health_data,
+        avg_sleep=f"{avg_sleep} ч" if avg_sleep else "нет данных",
+        avg_energy=f"{avg_energy}/5" if avg_energy else "нет данных",
+        recent_workouts_done=weekly.get("workouts_done", 0),
+        recent_workouts_total=weekly.get("workouts_total", 0),
+        recent_prs=prs_str,
+        l4_digest=l4_digest,
+        min_workouts=min_workouts,
+        max_workouts=max_workouts,
+        preferred_days=preferred_days,
+        session_min=session_min,
+        avoided_exercises=avoided,
+    )
+
+    try:
+        client = get_client()
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=2000,
+            system=_PLAN_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+    except Exception as e:
+        logger.error(f"[PLAN] AI generation failed for uid={uid}: {e}")
+        return
+
+    plan_json_str, rationale = _parse_plan_response(raw)
+
+    if not plan_json_str:
+        logger.error(f"[PLAN] Failed to parse JSON from AI response for uid={uid}: {raw[:200]}")
+        return
+
+    # Считаем число тренировочных дней и объём
+    import json as _json
+    workouts_planned = 0
+    volume_total = 0
+    intensities = []
+    try:
+        days_list = _json.loads(plan_json_str)
+        for day in days_list:
+            if day.get("type") not in ("rest", "recovery"):
+                workouts_planned += 1
+                volume_total += day.get("duration_min") or 0
+            for ex in (day.get("exercises") or []):
+                if ex.get("rpe"):
+                    intensities.append(ex["rpe"])
+    except Exception:
+        pass
+
+    intensity_avg = round(sum(intensities) / len(intensities), 1) if intensities else None
+
+    plan_id = save_training_plan(
+        user_id=uid,
+        week_start=week_start,
+        plan_json_str=plan_json_str,
+        ai_rationale=rationale,
+        fitness_score_snap=fs["score"] if fs else None,
+        sleep_avg_snap=avg_sleep,
+        energy_avg_snap=avg_energy,
+        calories_target=l2.get("daily_calories"),
+        season=surface.get("season"),
+        workouts_planned=workouts_planned,
+        volume_total=volume_total or None,
+        intensity_avg=intensity_avg,
+    )
+
+    # Отправляем план пользователю
+    plan_record = {
+        "plan_id": plan_id,
+        "week_start": week_start,
+        "plan_json": plan_json_str,
+        "ai_rationale": rationale,
+        "workouts_planned": workouts_planned,
+        "workouts_completed": 0,
+    }
+    msg = _format_plan_message(plan_record)
+
+    try:
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=f"📅 Новый план тренировок на неделю!\n\n{msg}",
+            parse_mode="Markdown",
+        )
+        logger.info(f"[PLAN] Sent plan_id={plan_id} to {telegram_id}")
+    except Exception as e:
+        logger.error(f"[PLAN] Failed to send plan to {telegram_id}: {e}")
+
+
+async def broadcast_plan_archive(bot) -> None:
+    """
+    Воскресенье 19:00 — архивация активных планов всех пользователей.
+    Должна запускаться ДО генерации нового плана.
+    """
+    users = _get_all_active_users()
+    logger.info(f"[PLAN] Archiving plans for {len(users)} users")
+    for user in users:
+        try:
+            await archive_weekly_plan_for_user(user["id"])
+        except Exception as e:
+            logger.error(f"[PLAN] Archive failed for uid={user['id']}: {e}")
+    logger.info("[PLAN] Archive broadcast complete")
+
+
+async def broadcast_plan_generate(bot) -> None:
+    """
+    Воскресенье 20:00 — генерация нового плана для всех активных пользователей.
+    Запускается через час после архивации.
+    """
+    users = _get_all_active_users()
+    logger.info(f"[PLAN] Generating plans for {len(users)} users")
+    for user in users:
+        if _should_silence(user):
+            continue
+        try:
+            await generate_weekly_plan_for_user(user["id"], user["telegram_id"], bot)
+        except Exception as e:
+            logger.error(f"[PLAN] Generate failed for {user['telegram_id']}: {e}")
+    logger.info("[PLAN] Generate broadcast complete")

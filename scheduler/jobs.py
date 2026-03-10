@@ -8,11 +8,17 @@ from telegram import Bot
 from scheduler.logic import (
     broadcast_morning, broadcast_afternoon,
     broadcast_evening, broadcast_weekly, check_and_send_reminders,
-    broadcast_l4_intelligence,
+    broadcast_l4_intelligence, broadcast_daily_summary,
+    broadcast_monthly_summary,
+    broadcast_plan_archive, broadcast_plan_generate,
 )
+from scheduler.nudges import check_and_send_nudges
 from config import (
     SCHEDULE_MAX_MORNING, SCHEDULE_MAX_AFTERNOON, SCHEDULE_MAX_EVENING,
-    DAILY_SUMMARY_TIME, WEEKLY_SUMMARY_DAY, MONTHLY_BACKUP_TIME
+    DAILY_SUMMARY_TIME, WEEKLY_SUMMARY_DAY,
+    MONTHLY_SUMMARY_TIME, MONTHLY_BACKUP_TIME,
+    TRAINING_PLAN_ARCHIVE_TIME, TRAINING_PLAN_GENERATE_TIME,
+    NUDGE_CHECK_TIME,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +98,25 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
     )
     logger.info("L4 Intelligence update scheduled: Sunday 21:30")
 
+    # ── Daily Summary — каждый день по DAILY_SUMMARY_TIME (по умолчанию 23:00) ─
+    scheduler.add_job(
+        broadcast_daily_summary, "cron",
+        hour=dh, minute=dm,
+        id="daily_summary",
+        replace_existing=True,
+    )
+    logger.info(f"Daily summary scheduled: {DAILY_SUMMARY_TIME}")
+
+    # ── Monthly Summary — 1-е число в MONTHLY_SUMMARY_TIME (09:00) ────────────
+    msh, msm = _parse_time(MONTHLY_SUMMARY_TIME)
+    scheduler.add_job(
+        broadcast_monthly_summary, "cron",
+        day=1, hour=msh, minute=msm,
+        id="monthly_summary",
+        replace_existing=True,
+    )
+    logger.info(f"Monthly summary scheduled: 1st of month {MONTHLY_SUMMARY_TIME}")
+
     # ── Ежемесячный бэкап ────────────────────────────────────────────────────
     bh, bm = _parse_time(MONTHLY_BACKUP_TIME)
     try:
@@ -105,5 +130,40 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
         logger.info(f"Monthly backup scheduled: 1st of month {MONTHLY_BACKUP_TIME}")
     except ImportError:
         logger.warning("backup.py not found, skipping monthly backup job")
+
+    # ── Тренировочный план — воскресенье 19:00 архивация ──────────────────────
+    ph, pm = _parse_time(TRAINING_PLAN_ARCHIVE_TIME)
+    scheduler.add_job(
+        broadcast_plan_archive, "cron",
+        day_of_week="sun",
+        hour=ph, minute=pm,
+        args=[bot],
+        id="plan_archive",
+        replace_existing=True,
+    )
+    logger.info(f"Plan archive scheduled: Sunday {TRAINING_PLAN_ARCHIVE_TIME}")
+
+    # ── Тренировочный план — воскресенье 20:00 генерация ──────────────────────
+    gh, gm = _parse_time(TRAINING_PLAN_GENERATE_TIME)
+    scheduler.add_job(
+        broadcast_plan_generate, "cron",
+        day_of_week="sun",
+        hour=gh, minute=gm,
+        args=[bot],
+        id="plan_generate",
+        replace_existing=True,
+    )
+    logger.info(f"Plan generate scheduled: Sunday {TRAINING_PLAN_GENERATE_TIME}")
+
+    # ── Проактивные нудж-сообщения — ежедневно в NUDGE_CHECK_TIME (08:00) ────
+    nh, nm = _parse_time(NUDGE_CHECK_TIME)
+    scheduler.add_job(
+        check_and_send_nudges, "cron",
+        hour=nh, minute=nm,
+        args=[bot],
+        id="nudge_checker",
+        replace_existing=True,
+    )
+    logger.info(f"Nudge checker scheduled: {NUDGE_CHECK_TIME}")
 
     logger.info("All scheduler jobs registered")

@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS memory_training (
     user_id             INTEGER PRIMARY KEY REFERENCES user_profile(id),
     -- Brief (всегда)
     preferred_days      TEXT DEFAULT '[]',   -- JSON: ["вторник", "пятница"]
+    preferred_time      TEXT DEFAULT 'flexible',  -- morning / evening / flexible
     avg_session_min     INTEGER DEFAULT 45,
     current_program     TEXT,                -- название текущей программы
     -- Deep (только при training-контексте)
@@ -165,9 +166,198 @@ CREATE TABLE IF NOT EXISTS memory_intelligence (
     generated_at        TEXT DEFAULT (datetime('now'))
 );
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ФАЗА 7 — РАСШИРЕННАЯ АНАЛИТИКА
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ─── Журнал питания (дневной) ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS nutrition_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    date            TEXT NOT NULL,          -- YYYY-MM-DD
+    calories        INTEGER,                -- реально съеденные ккал
+    protein_g       REAL,
+    fat_g           REAL,
+    carbs_g         REAL,
+    water_ml        INTEGER,
+    meal_notes      TEXT,                   -- что ел (краткое)
+    quality_score   INTEGER CHECK(quality_score BETWEEN 1 AND 10),
+    junk_food       INTEGER DEFAULT 0,      -- 1 = был фастфуд/мусор
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- ─── AI-рекомендации по питанию ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS nutrition_insights (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    insight_type    TEXT,   -- deficiency / recommendation / warning
+    nutrient        TEXT,   -- что конкретно (витамин D, белок и т.д.)
+    description     TEXT,
+    action          TEXT,   -- что делать
+    detected_at     TEXT DEFAULT (datetime('now')),
+    resolved        INTEGER DEFAULT 0
+);
+
+-- ─── Детальный лог упражнений ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS exercise_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    workout_id      INTEGER REFERENCES workouts(id),
+    date            TEXT NOT NULL,
+    exercise_name   TEXT NOT NULL,
+    sets            INTEGER,
+    reps            INTEGER,
+    duration_sec    INTEGER,        -- для планки, кардио
+    weight_kg       REAL,           -- если с весом
+    is_personal_record INTEGER DEFAULT 0,
+    notes           TEXT,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- ─── Личные рекорды ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS personal_records (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    exercise_name   TEXT NOT NULL,
+    record_value    REAL NOT NULL,  -- число (повторы/секунды/кг)
+    record_type     TEXT NOT NULL,  -- reps / time / weight
+    set_at          TEXT NOT NULL,  -- YYYY-MM-DD
+    previous_record REAL,           -- предыдущий рекорд для сравнения
+    improvement_pct REAL,           -- прирост в %
+    notes           TEXT
+);
+
+-- ─── AI-дневное резюме ────────────────────────────────────────────────────
+-- Генерируется ночью (после вечернего чек-ина).
+-- Используется как долгосрочная память: AI видит последние 3–7 дней.
+CREATE TABLE IF NOT EXISTS daily_summary (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    date            TEXT NOT NULL,          -- YYYY-MM-DD
+    summary_text    TEXT NOT NULL,          -- AI-сгенерированный текст (2–4 предложения)
+    workout_done    INTEGER DEFAULT 0,      -- 1 = тренировка была
+    calories_met    INTEGER DEFAULT 0,      -- 1 = план КБЖУ выполнен (±15%)
+    mood_score      INTEGER,                -- 1–5 (из metrics)
+    energy_score    INTEGER,                -- 1–5 (из metrics)
+    sleep_hours     REAL,                   -- из metrics
+    key_insight     TEXT,                   -- одно ключевое AI-наблюдение
+    generated_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_id, date)
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ФАЗА 8 — АНАЛИТИКА
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ─── AI-месячное резюме ────────────────────────────────────────────────────
+-- Генерируется 1-го числа каждого месяца в 09:00.
+-- Даёт AI долгосрочную «хронику» — последние 3 месяца как контекст.
+-- Грузится ТОЛЬКО при analytics-контексте (экономия токенов).
+CREATE TABLE IF NOT EXISTS monthly_summary (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    month           TEXT NOT NULL,          -- YYYY-MM (за прошедший месяц)
+    workouts_done   INTEGER DEFAULT 0,
+    workouts_total  INTEGER DEFAULT 0,      -- рабочих дней в месяце (из weekly_summaries)
+    avg_intensity   REAL,
+    avg_sleep       REAL,
+    avg_energy      REAL,
+    avg_calories    INTEGER,                -- среднее ккал/день (из nutrition_log)
+    best_exercise   TEXT,                   -- название упражнения с лучшим PR
+    best_pr_text    TEXT,                   -- человекочитаемо: "жим 90кг"
+    summary_text    TEXT,                   -- AI: 2–3 предложения о месяце
+    trend_vs_prev   TEXT,                   -- AI: сравнение с предыдущим месяцем
+    key_insight     TEXT,                   -- AI: 1 рекомендация на следующий месяц
+    generated_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_id, month)
+);
+
+-- ─── Фитнес-тест (Фаза 8.2) ─────────────────────────────────────────────
+-- Периодическое тестирование: отжимания, приседания, планка.
+-- Нормализация по ACSM/NSCA/Cooper Institute.
+-- fitness_score = pushups×0.35 + squats×0.35 + plank×0.30
+CREATE TABLE IF NOT EXISTS user_fitness_metrics (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    tested_at       TEXT NOT NULL,          -- YYYY-MM-DD
+    max_pushups     INTEGER,                -- повт, без остановки
+    max_squats      INTEGER,                -- повт, без остановки
+    plank_sec       INTEGER,                -- секунды
+    resting_hr      INTEGER,                -- ЧСС покоя (уд/мин, опц.)
+    pushups_score   REAL,                   -- 0-100 (piecewise ACSM)
+    squats_score    REAL,                   -- 0-100
+    plank_score     REAL,                   -- 0-100
+    fitness_score   REAL,                   -- итоговый 0-100
+    strength_score  REAL,                   -- (pushups+squats)/2
+    endurance_score REAL,                   -- NULL (зарезервировано)
+    flexibility_score REAL,                 -- NULL (зарезервировано)
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ФАЗА 8.3 — AI PLAN
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ─── Недельный AI-план тренировок ─────────────────────────────────────────
+-- plan_id = "PLN-{user_id}-{YYYYWW}" — уникален, сортируемый, человекочитаемый.
+-- Цикл: draft → active (воскресенье 20:00) → archived (следующее воскресенье 19:00).
+-- После архивации данные интегрируются в monthly_summary как 1/4 месяца.
+CREATE TABLE IF NOT EXISTS training_plan (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id             TEXT NOT NULL UNIQUE,   -- "PLN-{user_id}-{YYYYWW}"
+    user_id             INTEGER NOT NULL REFERENCES user_profile(id),
+    week_start          TEXT NOT NULL,          -- YYYY-MM-DD (понедельник)
+    status              TEXT DEFAULT 'active',  -- draft | active | archived
+    -- Снимок состояния атлета на момент генерации
+    fitness_score_snap  REAL,
+    sleep_avg_snap      REAL,                   -- средний сон за последние 7 дней
+    energy_avg_snap     REAL,                   -- средняя энергия за последние 7 дней
+    calories_target     INTEGER,                -- цель КБЖУ на неделю
+    season              TEXT,                   -- сезон на момент генерации
+    -- Контент плана
+    plan_json           TEXT NOT NULL,          -- JSON-массив объектов дней
+    ai_rationale        TEXT,                   -- AI-обоснование плана
+    -- Статистика выполнения (обновляется при архивации)
+    workouts_planned    INTEGER DEFAULT 0,
+    workouts_completed  INTEGER DEFAULT 0,
+    completion_pct      REAL,                   -- % выполнения
+    volume_total        INTEGER,                -- суммарные минуты тренировок
+    intensity_avg       REAL,                   -- средняя целевая интенсивность
+    -- Временные метки
+    generated_at        TEXT DEFAULT (datetime('now')),
+    updated_at          TEXT DEFAULT (datetime('now')),
+    archived_at         TEXT,
+    UNIQUE(user_id, week_start)
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ФАЗА 8.4 — ПРОАКТИВНЫЕ НУДЖ-СООБЩЕНИЯ
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ─── Журнал отправленных нудж-сообщений ───────────────────────────────────
+-- Используется для anti-spam логики:
+--   • drop / recovery: кулдаун 24 ч
+--   • streak / pr_approaching / goal_progress: кулдаун 7 дней
+CREATE TABLE IF NOT EXISTS nudge_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    nudge_type      TEXT NOT NULL,  -- drop | streak | pr_approaching | recovery | goal_progress
+    sent_at         TEXT DEFAULT (datetime('now')),
+    message_preview TEXT            -- первые 100 символов отправленного сообщения
+);
+
 -- ─── Индексы ──────────────────────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_workouts_user_date    ON workouts(user_id, date);
-CREATE INDEX IF NOT EXISTS idx_metrics_user_date     ON metrics(user_id, date);
-CREATE INDEX IF NOT EXISTS idx_checkins_user_date    ON checkins(user_id, date, time_slot);
-CREATE INDEX IF NOT EXISTS idx_context_user          ON conversation_context(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_reminders_user_status ON reminders(user_id, status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_workouts_user_date       ON workouts(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_metrics_user_date        ON metrics(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_checkins_user_date       ON checkins(user_id, date, time_slot);
+CREATE INDEX IF NOT EXISTS idx_context_user             ON conversation_context(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_reminders_user_status    ON reminders(user_id, status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_nutrition_log_user_date  ON nutrition_log(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_exercise_results_user    ON exercise_results(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_personal_records_user    ON personal_records(user_id, exercise_name);
+CREATE INDEX IF NOT EXISTS idx_daily_summary_user_date  ON daily_summary(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_monthly_summary_user     ON monthly_summary(user_id, month);
+CREATE INDEX IF NOT EXISTS idx_fitness_metrics_user     ON user_fitness_metrics(user_id, tested_at);
+CREATE INDEX IF NOT EXISTS idx_training_plan_user       ON training_plan(user_id, week_start);
+CREATE INDEX IF NOT EXISTS idx_training_plan_status     ON training_plan(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_nudge_log_user           ON nudge_log(user_id, nudge_type, sent_at);

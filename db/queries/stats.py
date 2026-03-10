@@ -58,6 +58,108 @@ def get_all_time_stats(user_id: int) -> dict:
     }
 
 
+def get_monthly_stats(user_id: int, year: int, month: int) -> dict:
+    """
+    Агрегация данных за конкретный календарный месяц.
+    Используется generate_monthly_summary_for_user в scheduler/logic.py.
+
+    Возвращает:
+      workouts_done   — завершённых тренировок
+      workouts_total  — всего записей (попыток)
+      avg_intensity   — средняя интенсивность (только по завершённым)
+      avg_sleep       — средний сон
+      avg_energy      — средняя энергия
+      avg_calories    — средние ккал/день (из nutrition_log, если есть)
+      best_pr         — лучший PR за месяц: {"exercise": str, "text": str} | None
+    """
+    conn = get_connection()
+
+    # Границы месяца
+    month_start = f"{year:04d}-{month:02d}-01"
+    if month == 12:
+        month_end = f"{year + 1:04d}-01-01"
+    else:
+        month_end = f"{year:04d}-{month + 1:02d}-01"
+
+    # Тренировки
+    w = conn.execute("""
+        SELECT
+            COUNT(*) as total,
+            SUM(completed) as done,
+            AVG(CASE WHEN completed = 1 THEN intensity END) as avg_intensity
+        FROM workouts
+        WHERE user_id = ? AND date >= ? AND date < ?
+    """, (user_id, month_start, month_end)).fetchone()
+
+    # Метрики (сон / энергия)
+    m = conn.execute("""
+        SELECT
+            AVG(sleep_hours) as avg_sleep,
+            AVG(energy) as avg_energy
+        FROM metrics
+        WHERE user_id = ? AND date >= ? AND date < ?
+    """, (user_id, month_start, month_end)).fetchone()
+
+    # Среднее питание (nutrition_log может быть пустым — обрабатываем тихо)
+    avg_calories = None
+    try:
+        n = conn.execute("""
+            SELECT AVG(calories) as avg_cal
+            FROM nutrition_log
+            WHERE user_id = ? AND date >= ? AND date < ?
+              AND calories IS NOT NULL AND calories > 0
+        """, (user_id, month_start, month_end)).fetchone()
+        if n and n["avg_cal"]:
+            avg_calories = round(n["avg_cal"])
+    except Exception:
+        pass
+
+    # Лучший PR за месяц (по improvement_pct — самый впечатляющий прирост)
+    best_pr = None
+    try:
+        pr_row = conn.execute("""
+            SELECT exercise_name, record_value, record_type, improvement_pct
+            FROM personal_records
+            WHERE user_id = ? AND set_at >= ? AND set_at < ?
+            ORDER BY improvement_pct DESC
+            LIMIT 1
+        """, (user_id, month_start, month_end)).fetchone()
+        if pr_row:
+            suffix_map = {"weight": "кг", "time": "сек", "reps": "пов"}
+            suffix = suffix_map.get(pr_row["record_type"], "")
+            pr_text = f"{pr_row['exercise_name']} {pr_row['record_value']}{suffix}"
+            if pr_row["improvement_pct"]:
+                pr_text += f" (+{pr_row['improvement_pct']:.1f}%)"
+            best_pr = {"exercise": pr_row["exercise_name"], "text": pr_text}
+    except Exception:
+        pass
+
+    return {
+        "workouts_total": w["total"] or 0,
+        "workouts_done": int(w["done"] or 0),
+        "avg_intensity": round(w["avg_intensity"], 1) if w["avg_intensity"] else None,
+        "avg_sleep": round(m["avg_sleep"], 1) if m["avg_sleep"] else None,
+        "avg_energy": round(m["avg_energy"], 1) if m["avg_energy"] else None,
+        "avg_calories": avg_calories,
+        "best_pr": best_pr,
+    }
+
+
+def get_monthly_plan_stats(user_id: int, year: int, month: int) -> dict:
+    """
+    Агрегирует данные архивных тренировочных планов за календарный месяц.
+    Используется generate_monthly_summary_for_user для обогащения AI-контекста.
+
+    Возвращает:
+      plans_count    — кол-во архивных планов за месяц
+      avg_completion — среднее % выполнения (float | None)
+      volume_trend   — суммарный объём минут (int | None)
+      best_plan_pct  — % лучшего плана (float | None)
+    """
+    from db.queries.training_plan import get_monthly_plan_stats as _plan_stats
+    return _plan_stats(user_id, year, month)
+
+
 def get_days_since_last_active(user_id: int) -> int | None:
     """Сколько дней с последней активности. None если никогда."""
     conn = get_connection()

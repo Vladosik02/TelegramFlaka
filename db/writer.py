@@ -70,7 +70,7 @@ def save_workout_from_parsed(telegram_id: int, parsed: dict) -> None:
         return
     today = datetime.date.today().isoformat()
     mode = get_trainer_mode()
-    log_workout(
+    workout_id = log_workout(
         user_id=user["id"],
         date=today,
         mode=mode,
@@ -81,6 +81,41 @@ def save_workout_from_parsed(telegram_id: int, parsed: dict) -> None:
         notes=parsed.get("notes"),
         completed=parsed.get("completed", True)
     )
+    # ── Дополнительно: парсим и сохраняем упражнения в exercise_results ───────
+    if parsed.get("notes"):
+        _save_exercise_results(user["id"], workout_id, parsed["notes"], today)
+
+
+def _save_exercise_results(user_id: int, workout_id: int | None,
+                            text: str, date: str) -> None:
+    """
+    Внутренняя функция: парсит упражнения из текста и сохраняет в exercise_results.
+    Вызывается автоматически из save_workout_from_parsed.
+    """
+    from ai.response_parser import parse_exercises_from_message
+    from db.queries.exercises import log_exercise_result
+    exercises = parse_exercises_from_message(text)
+    if not exercises:
+        return
+    for ex in exercises:
+        name = ex.get("exercise_name", "").strip()
+        if not name:
+            continue
+        result_id = log_exercise_result(
+            user_id=user_id,
+            exercise_name=name,
+            date=date,
+            workout_id=workout_id,
+            sets=ex.get("sets"),
+            reps=ex.get("reps"),
+            duration_sec=ex.get("duration_sec"),
+            weight_kg=ex.get("weight_kg"),
+        )
+        logger.info(
+            f"[EXERCISE] saved id={result_id} user={user_id} "
+            f"name='{name}' sets={ex.get('sets')} reps={ex.get('reps')} "
+            f"weight={ex.get('weight_kg')} dur={ex.get('duration_sec')}"
+        )
 
 
 def save_metrics_from_parsed(telegram_id: int, parsed: dict) -> None:
@@ -100,3 +135,22 @@ def save_metrics_from_parsed(telegram_id: int, parsed: dict) -> None:
         steps=parsed.get("steps"),
         notes=parsed.get("notes")
     )
+
+
+def save_nutrition_from_parsed(telegram_id: int, parsed: dict) -> None:
+    """
+    Сохранить данные о питании за сегодня.
+    Пустые поля игнорируются — обновляем только то, что нашёл парсер.
+    """
+    from db.queries.nutrition import log_nutrition_day
+    user = get_user(telegram_id)
+    if not user:
+        return
+    # Убираем поля с None и пустые строки
+    fields = {k: v for k, v in parsed.items() if v is not None and v != ""}
+    if fields:
+        log_nutrition_day(user["id"], **fields)
+        logger.info(
+            f"[NUTRITION] saved for user={telegram_id}: "
+            + ", ".join(f"{k}={v}" for k, v in fields.items() if k != "meal_notes")
+        )

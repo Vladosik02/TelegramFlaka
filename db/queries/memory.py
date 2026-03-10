@@ -236,12 +236,13 @@ def update_exercise_score(user_id: int, exercise: str, score: float,
 
 
 def get_l3_brief(user_id: int) -> dict:
-    """L3 brief: preferred_days, avg_session_min, current_program."""
+    """L3 brief: preferred_days, preferred_time, avg_session_min, current_program."""
     row = get_training_intel(user_id)
     if not row:
         return {}
     return {
         "preferred_days":  _json_get(row, "preferred_days", []),
+        "preferred_time":  row.get("preferred_time", "flexible"),
         "avg_session_min": row.get("avg_session_min", 45),
         "current_program": row.get("current_program"),
     }
@@ -260,6 +261,7 @@ def get_l3_deep(user_id: int) -> dict:
     }
     return {
         "preferred_days":   _json_get(row, "preferred_days", []),
+        "preferred_time":   row.get("preferred_time", "flexible"),
         "avg_session_min":  row.get("avg_session_min", 45),
         "current_program":  row.get("current_program"),
         "notable_exercises": notable,   # только notable, экономим токены

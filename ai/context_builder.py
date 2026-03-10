@@ -24,6 +24,7 @@ from db.queries.context import (
     add_conversation_message,
 )
 from db.queries.stats import get_last_n_weeks
+from db.queries.fitness_metrics import get_fitness_score, get_fitness_level
 from db.queries.memory import (
     get_l0_surface, get_l1_deep_bio,
     get_l2_brief, get_l2_deep,
@@ -142,9 +143,10 @@ def build_evening_context(telegram_id: int) -> dict:
     if metrics_today:
         m = metrics_today[0]
         parts = []
-        if m.get("energy"): parts.append(f"энергия {m['energy']}/5")
+        if m.get("energy"):      parts.append(f"энергия {m['energy']}/5")
         if m.get("sleep_hours"): parts.append(f"сон {m['sleep_hours']}ч")
-        if m.get("mood"): parts.append(f"настроение {m['mood']}/5")
+        if m.get("mood"):        parts.append(f"настроение {m['mood']}/5")
+        if m.get("water_liters"): parts.append(f"вода {m['water_liters']}л")
         if parts: daily_metrics = ", ".join(parts)
 
     weekly_progress = (
@@ -235,6 +237,19 @@ def build_chat_context(telegram_id: int) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ─── Классификатор сообщений ──────────────────────────────────────────────
+_ANALYTICS_WORDS = (
+    "прогресс", "динамик", "за месяц", "за год", "результат", "статистик",
+    "аналитик", "сравн", "тренд", "итог", "достижен", "рекорд всех времён",
+    "как я иду", "что изменилось", "чего добился", "сводк",
+)
+
+_PLAN_WORDS = (
+    "план", "планир", "расписан", "schedule", "тренировк на неде",
+    "на следующей неде", "на этой неде", "скорректируй план",
+    "измени план", "подправь план", "покажи план", "какой план",
+    "что тренир", "что делать сегодня", "что делать завтра",
+)
+
 _HEALTH_WORDS = (
     "боль", "болит", "травм", "ноет", "растяжен", "ушиб", "врач", "доктор",
     "добавк", "витамин", "протеин", "принима", "дозировк", "аллерг",
@@ -267,6 +282,10 @@ def _classify_message(text: str) -> frozenset:
         tags.add("food")
     if any(w in t for w in _TRAINING_WORDS):
         tags.add("training")
+    if any(w in t for w in _ANALYTICS_WORDS):
+        tags.add("analytics")
+    if any(w in t for w in _PLAN_WORDS):
+        tags.add("plan")
     return frozenset(tags)
 
 
@@ -299,6 +318,14 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
                 lines.append(f"Активные травмы: {', '.join(inj)}")
         except Exception:
             pass
+    # fitness_score (Фаза 8.2) — загружается в L0 всегда (~8 tok)
+    fs = get_fitness_score(uid)
+    if fs:
+        level = get_fitness_level(fs["score"])
+        lines.append(
+            f"Fitness Score: {fs['score']:.0f}/100 — {level} "
+            f"(тест {fs['tested_at']})"
+        )
     return "\n".join(lines)
 
 
@@ -324,23 +351,40 @@ def _build_l1_deep_bio(uid: int) -> str | None:
 def _build_l2_nutrition(uid: int, deep: bool) -> str | None:
     """L2 Nutrition. Brief (~120 tok) всегда, deep (~200 tok) при food."""
     data = get_l2_deep(uid) if deep else get_l2_brief(uid)
-    if not data:
-        return None
     lines = ["## Питание (L2)"]
-    if data.get("daily_calories"):
+    if data and data.get("daily_calories"):
         lines.append(
             f"Цель КБЖУ: {data['daily_calories']} ккал / "
             f"Б{data.get('protein_g', '?')}г / "
             f"Ж{data.get('fat_g', '?')}г / "
             f"У{data.get('carbs_g', '?')}г"
         )
-    if deep:
+    if deep and data:
         if data.get("supplements"):
             lines.append(f"Добавки: {', '.join(data['supplements'])}")
         if data.get("restrictions"):
             lines.append(f"Ограничения: {', '.join(data['restrictions'])}")
         if data.get("last_meal_notes"):
-            lines.append(f"Последние заметки: {data['last_meal_notes']}")
+            lines.append(f"Последние заметки о питании: {data['last_meal_notes']}")
+    if deep:
+        from db.queries.nutrition import get_nutrition_log, get_active_insights
+        recent_log = get_nutrition_log(uid, days=3)
+        if recent_log:
+            log_lines = []
+            for entry in recent_log[:3]:
+                parts = []
+                if entry.get("calories"):   parts.append(f"{entry['calories']} ккал")
+                if entry.get("protein_g"):  parts.append(f"Б{entry['protein_g']}г")
+                if entry.get("water_ml"):   parts.append(f"вода {entry['water_ml']}мл")
+                if entry.get("junk_food"):  parts.append("🍔 читмил")
+                if parts:
+                    log_lines.append(f"  {entry['date']}: {', '.join(parts)}")
+            if log_lines:
+                lines.append("Журнал за 3 дня:\n" + "\n".join(log_lines))
+        insights = get_active_insights(uid, limit=2)
+        if insights:
+            insight_lines = [f"  ⚠️ {i['description']}" for i in insights]
+            lines.append("Рекомендации AI:\n" + "\n".join(insight_lines))
     return "\n".join(lines) if len(lines) > 1 else None
 
 
@@ -349,7 +393,10 @@ def _build_l3_training(uid: int, deep: bool) -> str | None:
     data = get_l3_deep(uid) if deep else get_l3_brief(uid)
     if not data:
         return None
+    _time_labels = {"morning": "утром", "evening": "вечером", "flexible": "гибко"}
     lines = ["## Тренировочный профиль (L3)"]
+    if data.get("preferred_time") and data["preferred_time"] != "flexible":
+        lines.append(f"Предпочтительное время: {_time_labels.get(data['preferred_time'], data['preferred_time'])}")
     if data.get("preferred_days"):
         lines.append(f"Тренировочные дни: {', '.join(data['preferred_days'])}")
     if data.get("avg_session_min"):
@@ -370,6 +417,174 @@ def _build_l3_training(uid: int, deep: bool) -> str | None:
             lines.append(f"Исключить: {', '.join(data['avoided_exercises'])}")
         if data.get("training_notes"):
             lines.append(f"Заметки: {data['training_notes']}")
+        # ── Личные рекорды из exercise_results ──────────────────────────────
+        from db.queries.exercises import get_recent_records, get_personal_records
+        recent_prs = get_recent_records(uid, days=30)
+        if recent_prs:
+            pr_lines = []
+            for pr in recent_prs[:3]:
+                parts = [pr["exercise_name"]]
+                if pr.get("record_type") == "weight":
+                    parts.append(f"{pr['record_value']} кг")
+                elif pr.get("record_type") == "reps":
+                    parts.append(f"{pr['record_value']} повт")
+                elif pr.get("record_type") == "time":
+                    parts.append(f"{int(pr['record_value'])} сек")
+                if pr.get("improvement_pct"):
+                    parts.append(f"+{pr['improvement_pct']:.0f}%")
+                pr_lines.append("  🏆 " + " — ".join(parts))
+            lines.append("Рекорды (30 дней):\n" + "\n".join(pr_lines))
+        all_prs = get_personal_records(uid, limit=5)
+        if all_prs:
+            pr_all_lines = []
+            for pr in all_prs:
+                val = pr["record_value"]
+                rtype = pr.get("record_type", "")
+                suffix = (" кг" if rtype == "weight"
+                          else " повт" if rtype == "reps"
+                          else " сек")
+                pr_all_lines.append(f"  {pr['exercise_name']}: {val}{suffix}")
+            lines.append("Личные рекорды (all-time):\n" + "\n".join(pr_all_lines))
+    return "\n".join(lines) if len(lines) > 1 else None
+
+
+def _build_daily_chronicle(uid: int, days: int = 5) -> str | None:
+    """
+    Хроника последних N дней (~150 tok).
+    Включается всегда — даёт AI «память» о недавних событиях.
+    Строит компактную таблицу: дата | тренировка | энергия | ключевое наблюдение.
+    """
+    from db.queries.daily_summary import get_daily_summaries
+    summaries = get_daily_summaries(uid, days=days)
+    if not summaries:
+        return None
+    lines = [f"## Хроника (последние {min(days, len(summaries))} дней)"]
+    for s in summaries:
+        date_short = s["date"][5:]  # MM-DD
+        icons = []
+        if s.get("workout_done"):  icons.append("💪")
+        if s.get("calories_met"): icons.append("🥗")
+        energy = f"⚡{s['energy_score']}/5" if s.get("energy_score") else ""
+        mood   = f"😊{s['mood_score']}/5"  if s.get("mood_score")   else ""
+        stats  = " ".join(filter(None, ["".join(icons), energy, mood]))
+        line = f"{date_short}: {s['summary_text'][:100]}"
+        if stats:
+            line += f" [{stats}]"
+        if s.get("key_insight"):
+            line += f"\n  → {s['key_insight'][:80]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _build_active_plan(uid: int) -> str | None:
+    """
+    Активный план тренировок (~150 tok).
+    Загружается ТОЛЬКО при "plan" теге — экономия токенов.
+    Даёт AI полную картину текущего недельного расписания для корректировок.
+    """
+    import json as _json
+    from db.queries.training_plan import get_active_plan
+    import datetime as _dt
+
+    plan = get_active_plan(uid)
+    if not plan:
+        return None
+
+    try:
+        days_list = _json.loads(plan["plan_json"])
+    except Exception:
+        return None
+
+    week_start = plan.get("week_start", "")
+    plan_id = plan.get("plan_id", "")
+    workouts_done = plan.get("workouts_completed", 0)
+    workouts_total = plan.get("workouts_planned", 0)
+
+    type_icons = {
+        "strength": "💪", "cardio": "🏃", "hiit": "⚡",
+        "mobility": "🧘", "rest": "😴", "recovery": "🌿",
+    }
+
+    lines = [
+        f"## Текущий план недели (L3-plan)",
+        f"plan_id: {plan_id}  |  неделя: {week_start}",
+        f"Прогресс: {workouts_done}/{workouts_total} тренировок",
+    ]
+
+    for day in days_list:
+        dtype = day.get("type", "rest")
+        icon = type_icons.get(dtype, "📅")
+        date_str = day.get("date", "")
+        weekday = day.get("weekday", "")
+        label = day.get("label", dtype)
+        completed = day.get("completed", False)
+        mark = "✅" if completed else "⬜"
+
+        try:
+            date_fmt = _dt.date.fromisoformat(date_str).strftime("%d.%m")
+        except Exception:
+            date_fmt = date_str
+
+        line = f"{mark} {weekday} {date_fmt}: {icon} {label}"
+
+        exercises = day.get("exercises") or []
+        if exercises:
+            ex_parts = []
+            for ex in exercises[:3]:  # первые 3 упражнения для краткости
+                name = ex.get("name", "")
+                sets = ex.get("sets")
+                reps = ex.get("reps")
+                weight = ex.get("weight_kg_target")
+                detail = name
+                if sets and reps:
+                    detail += f" {sets}×{reps}"
+                if weight:
+                    detail += f" @{weight}кг"
+                ex_parts.append(detail)
+            if len(exercises) > 3:
+                ex_parts.append(f"... ещё {len(exercises)-3}")
+            line += f" | {', '.join(ex_parts)}"
+
+        ai_note = day.get("ai_note", "")
+        if ai_note:
+            line += f"\n  → {ai_note[:80]}"
+
+        lines.append(line)
+
+    if plan.get("ai_rationale"):
+        lines.append(f"Обоснование плана: {plan['ai_rationale'][:150]}")
+
+    return "\n".join(lines) if len(lines) > 3 else None
+
+
+def _build_monthly_chronicle(uid: int, months: int = 3) -> str | None:
+    """
+    Хроника последних N месяцев (~100 tok).
+    Грузится ТОЛЬКО при analytics-контексте — экономия токенов.
+    Даёт AI долгосрочную «память»: что было сделано за последние кварталы.
+    """
+    from db.queries.monthly_summary import get_monthly_summaries
+    summaries = get_monthly_summaries(uid, months=months)
+    if not summaries:
+        return None
+    lines = [f"## Хроника ({min(months, len(summaries))} мес.)"]
+    for s in summaries:
+        month_short = s["month"]  # YYYY-MM
+        parts = [month_short]
+        if s.get("workouts_done") is not None:
+            parts.append(f"{s['workouts_done']} тр.")
+        if s.get("avg_sleep"):
+            parts.append(f"сон {s['avg_sleep']}ч")
+        if s.get("avg_energy"):
+            parts.append(f"⚡{s['avg_energy']}/5")
+        if s.get("best_pr_text"):
+            parts.append(f"🏆{s['best_pr_text']}")
+        line = " | ".join(parts)
+        if s.get("summary_text"):
+            line += f"\n  {s['summary_text'][:120]}"
+        if s.get("key_insight"):
+            line += f"\n  → {s['key_insight'][:80]}"
+        lines.append(line)
     return "\n".join(lines) if len(lines) > 1 else None
 
 
@@ -457,6 +672,23 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
     if l4:
         memory_blocks.append(l4)
 
+    # Daily chronicle: всегда (если есть накопленные резюме)
+    chronicle = _build_daily_chronicle(uid, days=5)
+    if chronicle:
+        memory_blocks.append(chronicle)
+
+    # Monthly chronicle: только при analytics-контексте (~100 tok)
+    if "analytics" in tags:
+        monthly = _build_monthly_chronicle(uid, months=3)
+        if monthly:
+            memory_blocks.append(monthly)
+
+    # Active training plan: только при plan-контексте (~150 tok)
+    if "plan" in tags:
+        active_plan = _build_active_plan(uid)
+        if active_plan:
+            memory_blocks.append(active_plan)
+
     # ── Компонуем system prompt ──────────────────────────────────────────
     base_system = get_system_prompt(mode)
     if memory_blocks:
@@ -475,7 +707,8 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
 
     logger.debug(
         f"[LAYERS] user={telegram_id} tags={set(tags)} "
-        f"blocks={len(memory_blocks)} history={len(history)}"
+        f"blocks={len(memory_blocks)} history={len(history)} "
+        f"plan={'yes' if 'plan' in tags else 'no'}"
     )
 
     return {

@@ -70,3 +70,30 @@ def kb_fitness_level() -> InlineKeyboardMarkup:
         InlineKeyboardButton("🏋️ Средний", callback_data="level_intermediate"),
         InlineKeyboardButton("🔥 Продвинутый", callback_data="level_advanced"),
     ]])
+
+
+# ─── Онбординг — время тренировки ────────────────────────────────────────────
+def kb_workout_time() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🌅 Утром", callback_data="time_morning"),
+        InlineKeyboardButton("🌙 Вечером", callback_data="time_evening"),
+        InlineKeyboardButton("⏰ Гибко", callback_data="time_flexible"),
+    ]])
+
+
+# ─── Онбординг — состояние здоровья ──────────────────────────────────────────
+def kb_health_check() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Всё в порядке", callback_data="health_ok"),
+        InlineKeyboardButton("⚠️ Есть ограничения", callback_data="health_issues"),
+    ]])
+
+
+# ─── Онбординг — место тренировки ────────────────────────────────────────────
+def kb_training_location() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Дома", callback_data="location_home"),
+         InlineKeyboardButton("🏋️ Зал", callback_data="location_gym")],
+        [InlineKeyboardButton("🌳 На улице", callback_data="location_outdoor"),
+         InlineKeyboardButton("🔄 По-разному", callback_data="location_flexible")],
+    ])
