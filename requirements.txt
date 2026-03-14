@@ -3,3 +3,4 @@ anthropic>=0.25.0
 apscheduler==3.10.4
 python-dotenv==1.0.0
 openai>=1.0.0        # Whisper API для голосовых сообщений
+pytest>=7.0.0        # тесты (Фаза 8.5)

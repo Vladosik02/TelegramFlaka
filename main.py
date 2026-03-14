@@ -18,8 +18,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import TELEGRAM_TOKEN
 from db.connection import init_db, close_connection
-from bot.commands import cmd_start, cmd_stop, cmd_stats, cmd_mode, cmd_help, cmd_reset, cmd_export, cmd_profile, cmd_test, cmd_plan
-from bot.handlers import handle_message, handle_callback, handle_voice
+from bot.commands import (
+    cmd_start, cmd_stop, cmd_stats, cmd_mode, cmd_help, cmd_reset,
+    cmd_export, cmd_profile, cmd_test, cmd_plan, cmd_admin, cmd_setup, cmd_meal,
+    cmd_achievements, cmd_history,           # Фаза 10.4 / 10.7
+    cmd_menu,                                # Фаза 11 — главное меню
+)
+from bot.handlers import handle_message, handle_callback, handle_voice, handle_photo  # Фаза 10.3
 from scheduler.jobs import setup_scheduler
 
 # ─── Логирование ─────────────────────────────────────────────────────────────
@@ -53,12 +58,21 @@ def main() -> None:
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("test",    cmd_test))
     app.add_handler(CommandHandler("plan",    cmd_plan))
+    app.add_handler(CommandHandler("setup",        cmd_setup))
+    app.add_handler(CommandHandler("meal",         cmd_meal))
+    app.add_handler(CommandHandler("admin",        cmd_admin))
+    app.add_handler(CommandHandler("achievements", cmd_achievements))  # Фаза 10.4
+    app.add_handler(CommandHandler("history",      cmd_history))       # Фаза 10.7
+    app.add_handler(CommandHandler("menu",         cmd_menu))          # Фаза 11
 
     # ── 4. Текстовые сообщения ────────────────────────────────────────────────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # ── 4b. Голосовые сообщения (Whisper) ─────────────────────────────────────
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
+    # ── 4c. Фото — Claude Vision (Фаза 10.3) ──────────────────────────────────
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     # ── 5. Inline callback'и ──────────────────────────────────────────────────
     app.add_handler(CallbackQueryHandler(handle_callback))
