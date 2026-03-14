@@ -15,7 +15,7 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 0))
 
 # ─── Модель ───────────────────────────────────────────────────────────────────
 MODEL = "claude-sonnet-4-20250514"
-MAX_TOKENS = 1000
+MAX_TOKENS = 1500  # Agent Fix: 1000 → 1500 для Tool Use цепочек + развёрнутый ответ
 
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
