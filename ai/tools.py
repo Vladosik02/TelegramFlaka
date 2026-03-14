@@ -440,18 +440,116 @@ TOOL_AWARD_XP = {
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# 10. get_nutrition_history (Agent Fix — READ)
+# ───────────────────────────────────────────────────────────────────────────
+TOOL_GET_NUTRITION_HISTORY = {
+    "name": "get_nutrition_history",
+    "description": (
+        "Получает историю питания пользователя за последние N дней. "
+        "Вызывай когда пользователь спрашивает про питание, КБЖУ, "
+        "что ел вчера/на неделе/за месяц, средние калории."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 90,
+                "description": "Количество дней назад. По умолчанию 7."
+            }
+        },
+        "required": [],
+        "additionalProperties": False
+    }
+}
+
+# ───────────────────────────────────────────────────────────────────────────
+# 11. get_personal_records (Agent Fix — READ)
+# ───────────────────────────────────────────────────────────────────────────
+TOOL_GET_PERSONAL_RECORDS = {
+    "name": "get_personal_records",
+    "description": (
+        "Получает все личные рекорды пользователя из базы данных. "
+        "Вызывай при вопросах типа 'какие у меня рекорды', "
+        "'сколько я жму максимум', 'мои лучшие результаты', 'мои PR'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "exercise_name": {
+                "type": "string",
+                "description": "Фильтр по названию упражнения (необязательно)"
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Максимум записей. По умолчанию 10."
+            }
+        },
+        "required": [],
+        "additionalProperties": False
+    }
+}
+
+# ───────────────────────────────────────────────────────────────────────────
+# 12. get_current_plan (Agent Fix — READ)
+# ───────────────────────────────────────────────────────────────────────────
+TOOL_GET_CURRENT_PLAN = {
+    "name": "get_current_plan",
+    "description": (
+        "Получает текущий активный план тренировок на неделю из базы данных. "
+        "Вызывай когда пользователь спрашивает 'что делать сегодня', "
+        "'какой план на неделю', 'покажи тренировку на среду', 'мой план'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False
+    }
+}
+
+# ───────────────────────────────────────────────────────────────────────────
+# 13. get_user_profile (Agent Fix — READ)
+# ───────────────────────────────────────────────────────────────────────────
+TOOL_GET_USER_PROFILE = {
+    "name": "get_user_profile",
+    "description": (
+        "Получает полный профиль пользователя из базы данных: "
+        "цель, уровень, вес, рост, возраст, место тренировок, "
+        "предпочитаемые дни, сезон, травмы, XP, уровень, стрик. "
+        "Вызывай когда нужны точные актуальные данные профиля."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False
+    }
+}
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # Экспорт: полный список инструментов для передачи в Anthropic API
 # ───────────────────────────────────────────────────────────────────────────
 ALL_TOOLS: List[dict] = [
+    # WRITE (8)
     TOOL_SAVE_WORKOUT,
     TOOL_SAVE_METRICS,
     TOOL_SAVE_NUTRITION,
     TOOL_SAVE_EXERCISE_RESULT,
     TOOL_SET_PERSONAL_RECORD,
     TOOL_UPDATE_ATHLETE_CARD,
-    TOOL_GET_WEEKLY_STATS,
     TOOL_SAVE_EPISODE,
     TOOL_AWARD_XP,
+    # READ (5)
+    TOOL_GET_WEEKLY_STATS,
+    TOOL_GET_NUTRITION_HISTORY,
+    TOOL_GET_PERSONAL_RECORDS,
+    TOOL_GET_CURRENT_PLAN,
+    TOOL_GET_USER_PROFILE,
 ]
 
 # Словарь для быстрого lookup по имени

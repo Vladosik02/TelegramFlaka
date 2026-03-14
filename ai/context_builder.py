@@ -326,6 +326,38 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
             f"Fitness Score: {fs['score']:.0f}/100 — {level} "
             f"(тест {fs['tested_at']})"
         )
+
+    # ── Текущий вес + последние метрики из metrics (Agent Fix) ─────────────
+    try:
+        recent_metrics = get_metrics_range(uid, days=30)
+        if recent_metrics:
+            # Последний вес
+            for m in recent_metrics:
+                if m.get("weight_kg"):
+                    lines.append(f"Текущий вес: {m['weight_kg']} кг (на {m['date']})")
+                    break
+            # Последние сон/энергия/настроение (самая свежая запись)
+            latest = recent_metrics[0]
+            parts = []
+            if latest.get("sleep_hours"):
+                parts.append(f"сон {latest['sleep_hours']}ч")
+            if latest.get("energy"):
+                parts.append(f"энергия {latest['energy']}/5")
+            if latest.get("mood"):
+                parts.append(f"настроение {latest['mood']}/5")
+            if parts:
+                lines.append(f"Последние метрики ({latest['date']}): {', '.join(parts)}")
+    except Exception:
+        pass
+
+    # ── Место тренировок (Agent Fix) ──────────────────────────────────────
+    location_map = {
+        "home": "дома 🏠", "gym": "в зале 🏋️",
+        "outdoor": "на улице 🌳", "flexible": "гибко 🔄",
+    }
+    loc = user.get("training_location", "flexible")
+    lines.append(f"Место тренировок: {location_map.get(loc, loc)}")
+
     return "\n".join(lines)
 
 
@@ -713,6 +745,24 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
             if xp_info.get("xp_to_next_level", 0) > 0:
                 xp_line += f" | До следующего уровня: {xp_info['xp_to_next_level']} XP"
             memory_blocks.append(xp_line)
+    except Exception:
+        pass
+
+    # Recovery Score (Фаза 12.3): готовность к тренировке (~30 tok)
+    try:
+        from db.queries.recovery import format_recovery_block
+        recovery_block = format_recovery_block(uid)
+        if recovery_block:
+            memory_blocks.append(f"## Состояние восстановления\n{recovery_block}")
+    except Exception:
+        pass
+
+    # Периодизация (Фаза 12.2): текущая фаза мезоцикла (~40 tok)
+    try:
+        from db.queries.periodization import format_period_block
+        period_block = format_period_block(uid)
+        if period_block:
+            memory_blocks.append(period_block)
     except Exception:
         pass
 

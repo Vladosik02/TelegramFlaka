@@ -399,6 +399,24 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ФАЗА 12 — ADVANCED ANALYTICS & PERIODIZATION
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ─── Мезоциклы (Фаза 12.2) ────────────────────────────────────────────────
+-- Схема: Накопление (3 нед) → Интенсификация (2 нед) → Реализация (1 нед) → Deload (1 нед)
+-- Автоматически переключается каждое воскресенье через advance_mesocycle().
+CREATE TABLE IF NOT EXISTS mesocycles (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    phase           TEXT NOT NULL,          -- accumulation | intensification | realization | deload
+    phase_index     INTEGER DEFAULT 0,      -- позиция в PHASE_ORDER (0..6 для 7-недельного цикла)
+    week_number     INTEGER NOT NULL,       -- неделя внутри фазы (начинается с 1)
+    total_weeks     INTEGER NOT NULL,       -- общая длина цикла (7 недель по умолчанию)
+    started_at      TEXT,                   -- YYYY-MM-DD начала цикла
+    completed_at    TEXT                    -- YYYY-MM-DD завершения (NULL = активный)
+);
+
 -- ─── Индексы ──────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_workouts_user_date       ON workouts(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_metrics_user_date        ON metrics(user_id, date);
@@ -418,3 +436,4 @@ CREATE INDEX IF NOT EXISTS idx_achievements_user        ON achievements(user_id,
 CREATE INDEX IF NOT EXISTS idx_xp_log_user              ON xp_log(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_episodic_user_type       ON episodic_memory(user_id, episode_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_episodic_expires         ON episodic_memory(user_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_mesocycles_user          ON mesocycles(user_id, completed_at);

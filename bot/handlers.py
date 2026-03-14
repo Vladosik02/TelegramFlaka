@@ -400,38 +400,25 @@ async def _process_user_input(
 
     Порядок:
     1. Сохранить сообщение в БД
-    2. Regex-парсинг тренировки / метрик / питания (fallback, пока нет Tool Use)
-    3. Сжатие / сброс контекста по бюджету токенов
-    4. Генерация ответа через AI (стриминг)
-    5. Сохранить ответ AI в БД
+    2. Сжатие / сброс контекста по бюджету токенов
+    3. Генерация ответа через AI — агентный цикл (Tool Use)
+    4. Сохранить ответ AI в БД
+
+    NOTE: Regex-парсеры (is_workout_report, is_metrics_report, is_nutrition_report)
+    были отключены — теперь Claude сам записывает данные через Tool Use (Фаза 10.1).
+    Это устраняет проблему двойной записи и даёт более точный парсинг.
     """
     # 1. Сохраняем входящее сообщение
     save_user_message(tg_id, text)
 
-    # 2. Regex-парсеры (fallback до Tool Use в 10.1)
-    if is_workout_report(text):
-        parsed_workout = parse_workout_from_message(text)
-        if parsed_workout:
-            save_workout_from_parsed(tg_id, parsed_workout)
-
-    if is_metrics_report(text):
-        parsed_metrics = parse_metrics_from_message(text)
-        if parsed_metrics:
-            save_metrics_from_parsed(tg_id, parsed_metrics)
-
-    if is_nutrition_report(text):
-        parsed_nutrition = parse_nutrition_from_message(text)
-        if parsed_nutrition:
-            save_nutrition_from_parsed(tg_id, parsed_nutrition)
-
-    # 3. Авто-суммаризация / inactivity reset
+    # 2. Авто-суммаризация / inactivity reset
     compress_result = await maybe_compress_context(tg_id)
     if compress_result == "reset":
         logger.info(f"[CTX] Inactivity reset applied for {tg_id}")
     elif compress_result == "compress":
         logger.info(f"[CTX] Token budget compression applied for {tg_id}")
 
-    # 4. Генерация ответа AI — агентный цикл (Tool Use, Фаза 10.1)
+    # 3. Генерация ответа AI — агентный цикл (Tool Use, Фаза 10.1)
     try:
         await update.message.chat.send_action("typing")
         context = build_layered_context(tg_id, text)
@@ -443,7 +430,7 @@ async def _process_user_input(
             user_message=text,
             tg_id=tg_id,
         )
-        # 5. Сохраняем ответ
+        # 4. Сохраняем ответ
         if response:
             save_ai_response(tg_id, response)
     except Exception as e:

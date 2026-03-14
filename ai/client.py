@@ -147,11 +147,72 @@ def generate_chat_response(context: dict, user_message: str) -> str:
 
 
 def generate_scheduled_message(context: dict) -> str:
-    """Для плановых сообщений (утро/день/вечер/неделя) без user_message."""
+    """Для плановых сообщений (утро/день/вечер/неделя) без user_message (sync, без Tool Use)."""
     system = context.get("system", "")
     prompt = context.get("prompt", "")
     messages = [{"role": "user", "content": prompt}]
     return ask(system, messages)
+
+
+async def generate_scheduled_agent_message(
+    bot, chat_id: int, context: dict, tg_id: int,
+) -> str:
+    """
+    Агентный scheduled message с Tool Use (Agent Fix, Этап 7).
+    Для утренних/дневных/вечерних чек-инов — Claude может записывать метрики
+    из контекста и вызывать tools.
+
+    Fallback: если agent loop не доступен → обычный sync generate_scheduled_message().
+    """
+    system = context.get("system", "")
+    prompt = context.get("prompt", "")
+
+    try:
+        from ai.tools import ALL_TOOLS
+        from ai.tool_executor import execute_tool_calls
+
+        async_client = get_async_client()
+        messages = [{"role": "user", "content": prompt}]
+
+        for iteration in range(3):  # макс 3 итерации для scheduled
+            response = await async_client.messages.create(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=system,
+                tools=ALL_TOOLS,
+                messages=messages,
+            )
+
+            text_blocks = [b for b in response.content if b.type == "text"]
+            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+
+            if not tool_use_blocks or response.stop_reason == "end_turn":
+                if text_blocks:
+                    return "".join(b.text for b in text_blocks)
+                break
+
+            logger.info(
+                f"[SCHED-AGENT] iter={iteration+1} tools={[t.name for t in tool_use_blocks]} "
+                f"user={tg_id}"
+            )
+
+            messages.append({"role": "assistant", "content": response.content})
+
+            tool_results = await execute_tool_calls(
+                tg_id=tg_id,
+                tool_uses=tool_use_blocks,
+                bot=bot,
+                chat_id=chat_id,
+            )
+
+            messages.append({"role": "user", "content": tool_results})
+
+    except Exception as e:
+        logger.warning(f"[SCHED-AGENT] Fallback to sync for user={tg_id}: {e}")
+        return generate_scheduled_message(context)
+
+    # Fallback если ничего не вернулось
+    return generate_scheduled_message(context)
 
 
 # ── Агентный цикл с Tool Use (Фаза 10.1) ─────────────────────────────────
@@ -217,10 +278,33 @@ async def generate_agent_response(
                 break
 
             # Есть tool_use → выполняем и продолжаем цикл
+            tool_names = [t.name for t in tool_use_blocks]
             logger.info(
                 f"[AGENT] iter={iteration+1} tools_called="
-                f"{[t.name for t in tool_use_blocks]} user={tg_id}"
+                f"{tool_names} user={tg_id}"
             )
+
+            # Прогресс-индикатор: показываем что именно делает бот
+            _STATUS_RU = {
+                "save_workout": "💾 Записываю тренировку…",
+                "save_metrics": "💾 Сохраняю метрики…",
+                "save_nutrition": "💾 Записываю питание…",
+                "save_exercise_result": "💾 Записываю упражнение…",
+                "set_personal_record": "🏆 Фиксирую рекорд…",
+                "update_athlete_card": "📝 Обновляю профиль…",
+                "get_weekly_stats": "📊 Загружаю статистику…",
+                "get_nutrition_history": "🥗 Загружаю историю питания…",
+                "get_personal_records": "🏆 Загружаю рекорды…",
+                "get_current_plan": "📋 Загружаю план…",
+                "get_user_profile": "👤 Загружаю профиль…",
+                "award_xp": "⚡ Начисляю XP…",
+                "save_episode": "🧠 Сохраняю в память…",
+            }
+            status_text = _STATUS_RU.get(tool_names[0], "⚙️ Обрабатываю…")
+            try:
+                await sent_msg.edit_text(status_text)
+            except Exception:
+                pass
 
             # Добавляем ответ Claude с tool_use в историю
             messages.append({"role": "assistant", "content": response.content})
@@ -233,20 +317,20 @@ async def generate_agent_response(
                 chat_id=chat_id,
             )
 
+            # Логируем результаты инструментов
+            for tr in tool_results:
+                if isinstance(tr, dict) and tr.get("type") == "tool_result":
+                    content_preview = str(tr.get("content", ""))[:200]
+                    logger.debug(
+                        f"[AGENT] tool_result id={tr.get('tool_use_id', '?')[:8]}… "
+                        f"content={content_preview}"
+                    )
+
             # Добавляем результаты инструментов
             messages.append({
                 "role": "user",
                 "content": tool_results,
             })
-
-            # Частичный прогресс: показываем что инструменты запустились
-            if text_blocks:
-                partial = "".join(b.text for b in text_blocks)
-                if partial:
-                    try:
-                        await sent_msg.edit_text(partial + " ⚙️")
-                    except Exception:
-                        pass
 
         # Стримим/показываем финальный ответ
         if final_text:

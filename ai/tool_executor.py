@@ -85,15 +85,21 @@ async def execute_tool(
     Возвращает словарь с результатом (будет сериализован в JSON).
     """
     dispatch = {
+        # WRITE (8)
         "save_workout":         _tool_save_workout,
         "save_metrics":         _tool_save_metrics,
         "save_nutrition":       _tool_save_nutrition,
         "save_exercise_result": _tool_save_exercise_result,
         "set_personal_record":  _tool_set_personal_record,
         "update_athlete_card":  _tool_update_athlete_card,
-        "get_weekly_stats":     _tool_get_weekly_stats,
         "save_episode":         _tool_save_episode,
         "award_xp":             _tool_award_xp,
+        # READ (5)
+        "get_weekly_stats":     _tool_get_weekly_stats,
+        "get_nutrition_history": _tool_get_nutrition_history,
+        "get_personal_records": _tool_get_personal_records,
+        "get_current_plan":     _tool_get_current_plan,
+        "get_user_profile":     _tool_get_user_profile,
     }
 
     handler = dispatch.get(tool_name)
@@ -528,3 +534,222 @@ async def _tool_award_xp(tg_id: int, inp: dict, **kwargs) -> dict:
         "level_name": level_info.get("level_name") if level_info else None,
         "leveled_up": leveled_up,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# READ-ИНСТРУМЕНТЫ (Agent Fix)
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def _tool_get_nutrition_history(tg_id: int, inp: dict, **kwargs) -> dict:
+    """Получить историю питания за N дней."""
+    from db.queries.nutrition import get_nutrition_log
+
+    user = get_user(tg_id)
+    if not user:
+        return {"error": "User not found", "success": False}
+
+    days = inp.get("days", 7)
+    entries = get_nutrition_log(user["id"], days=days)
+
+    if not entries:
+        return {
+            "success": True,
+            "days": days,
+            "entries": [],
+            "message": f"Нет данных о питании за последние {days} дней",
+        }
+
+    result_entries = []
+    total_cal, total_p, total_f, total_c = 0, 0, 0, 0
+    count = 0
+    for e in entries:
+        entry = {"date": e["date"]}
+        if e.get("calories"):
+            entry["calories"] = e["calories"]
+            total_cal += e["calories"]
+            count += 1
+        if e.get("protein_g"):
+            entry["protein_g"] = e["protein_g"]
+            total_p += e["protein_g"]
+        if e.get("fat_g"):
+            entry["fat_g"] = e["fat_g"]
+            total_f += e["fat_g"]
+        if e.get("carbs_g"):
+            entry["carbs_g"] = e["carbs_g"]
+            total_c += e["carbs_g"]
+        if e.get("meal_notes"):
+            entry["meal_notes"] = e["meal_notes"][:100]
+        if e.get("junk_food"):
+            entry["junk_food"] = True
+        result_entries.append(entry)
+
+    avg = {}
+    if count > 0:
+        avg = {
+            "avg_calories": round(total_cal / count),
+            "avg_protein": round(total_p / count, 1),
+            "avg_fat": round(total_f / count, 1),
+            "avg_carbs": round(total_c / count, 1),
+        }
+
+    logger.info(f"[TOOL] get_nutrition_history: user={tg_id}, days={days}, entries={len(result_entries)}")
+    return {
+        "success": True,
+        "days": days,
+        "entries": result_entries,
+        "averages": avg,
+    }
+
+
+async def _tool_get_personal_records(tg_id: int, inp: dict, **kwargs) -> dict:
+    """Получить все личные рекорды."""
+    from db.queries.exercises import get_personal_records
+
+    user = get_user(tg_id)
+    if not user:
+        return {"error": "User not found", "success": False}
+
+    limit = inp.get("limit", 10)
+    records = get_personal_records(user["id"], limit=limit)
+
+    if not records:
+        return {
+            "success": True,
+            "records": [],
+            "message": "Пока нет личных рекордов",
+        }
+
+    result_records = []
+    exercise_filter = inp.get("exercise_name", "").lower()
+    for r in records:
+        if exercise_filter and exercise_filter not in r["exercise_name"].lower():
+            continue
+        rec = {
+            "exercise": r["exercise_name"],
+            "value": r["record_value"],
+            "type": r.get("record_type", ""),
+            "date": r.get("set_at", ""),
+        }
+        if r.get("improvement_pct"):
+            rec["improvement_pct"] = r["improvement_pct"]
+        result_records.append(rec)
+
+    logger.info(f"[TOOL] get_personal_records: user={tg_id}, count={len(result_records)}")
+    return {
+        "success": True,
+        "records": result_records,
+    }
+
+
+async def _tool_get_current_plan(tg_id: int, inp: dict, **kwargs) -> dict:
+    """Получить текущий план тренировок."""
+    from db.queries.training_plan import get_active_plan
+
+    user = get_user(tg_id)
+    if not user:
+        return {"error": "User not found", "success": False}
+
+    plan = get_active_plan(user["id"])
+    if not plan:
+        return {
+            "success": True,
+            "plan": None,
+            "message": "Нет активного плана тренировок",
+        }
+
+    try:
+        days_list = json.loads(plan["plan_json"])
+    except Exception:
+        days_list = []
+
+    result = {
+        "success": True,
+        "plan_id": plan.get("plan_id"),
+        "week_start": plan.get("week_start"),
+        "workouts_planned": plan.get("workouts_planned", 0),
+        "workouts_completed": plan.get("workouts_completed", 0),
+        "ai_rationale": plan.get("ai_rationale", "")[:200],
+        "days": [],
+    }
+
+    for day in days_list:
+        d = {
+            "weekday": day.get("weekday", ""),
+            "date": day.get("date", ""),
+            "type": day.get("type", "rest"),
+            "label": day.get("label", ""),
+            "completed": day.get("completed", False),
+        }
+        exercises = day.get("exercises") or []
+        if exercises:
+            d["exercises"] = [
+                {
+                    "name": ex.get("name", ""),
+                    "sets": ex.get("sets"),
+                    "reps": ex.get("reps"),
+                    "weight_kg_target": ex.get("weight_kg_target"),
+                }
+                for ex in exercises[:5]
+            ]
+        result["days"].append(d)
+
+    logger.info(f"[TOOL] get_current_plan: user={tg_id}, plan_id={result['plan_id']}")
+    return result
+
+
+async def _tool_get_user_profile(tg_id: int, inp: dict, **kwargs) -> dict:
+    """Получить полный профиль пользователя."""
+    from db.queries.memory import get_l0_surface
+    from db.queries.gamification import get_user_level_info
+    from db.queries.workouts import get_metrics_range, get_streak
+
+    user = get_user(tg_id)
+    if not user:
+        return {"error": "User not found", "success": False}
+
+    uid = user["id"]
+    surface = get_l0_surface(uid)
+    xp_info = get_user_level_info(uid)
+    streak = get_streak(uid)
+    recent_metrics = get_metrics_range(uid, days=7)
+
+    profile = {
+        "success": True,
+        "name": user.get("name"),
+        "goal": user.get("goal"),
+        "fitness_level": user.get("fitness_level"),
+        "training_location": user.get("training_location", "flexible"),
+        "active": bool(user.get("active", 1)),
+        "streak_days": streak,
+    }
+
+    if surface:
+        profile["age"] = surface.get("age")
+        profile["height_cm"] = surface.get("height_cm")
+        profile["season"] = surface.get("season", "maintain")
+
+    if user.get("injuries"):
+        try:
+            profile["injuries"] = json.loads(user["injuries"])
+        except Exception:
+            profile["injuries"] = []
+
+    if xp_info:
+        profile["total_xp"] = xp_info.get("total_xp", 0)
+        profile["current_level"] = xp_info.get("current_level", 1)
+        profile["level_name"] = xp_info.get("level_name", "Новичок")
+
+    # Последний вес
+    if recent_metrics:
+        for m in recent_metrics:
+            if m.get("weight_kg"):
+                profile["current_weight_kg"] = m["weight_kg"]
+                profile["weight_date"] = m["date"]
+                break
+        latest = recent_metrics[0]
+        profile["latest_sleep"] = latest.get("sleep_hours")
+        profile["latest_energy"] = latest.get("energy")
+        profile["latest_mood"] = latest.get("mood")
+
+    logger.info(f"[TOOL] get_user_profile: user={tg_id}")
+    return profile

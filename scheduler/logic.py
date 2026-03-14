@@ -15,7 +15,7 @@ from ai.context_builder import (
     build_morning_context, build_afternoon_context,
     build_evening_context, build_weekly_report_context
 )
-from ai.client import generate_scheduled_message
+from ai.client import generate_scheduled_message, generate_scheduled_agent_message
 from db.writer import save_ai_response
 from db.queries.memory import upsert_intelligence, append_observation
 from bot.keyboards import kb_morning_ready, kb_workout_done, kb_evening_confirm, kb_reminder
@@ -66,7 +66,7 @@ async def send_morning_checkin(bot: Bot, telegram_id: int) -> None:
     if not context:
         return
 
-    text = generate_scheduled_message(context)
+    text = await generate_scheduled_agent_message(bot, telegram_id, context, telegram_id)
     await bot.send_message(
         chat_id=telegram_id,
         text=text,
@@ -89,7 +89,7 @@ async def send_afternoon_checkin(bot: Bot, telegram_id: int) -> None:
     if not context:
         return
 
-    text = generate_scheduled_message(context)
+    text = await generate_scheduled_agent_message(bot, telegram_id, context, telegram_id)
     await bot.send_message(
         chat_id=telegram_id,
         text=text,
@@ -111,7 +111,7 @@ async def send_evening_checkin(bot: Bot, telegram_id: int) -> None:
     if not context:
         return
 
-    text = generate_scheduled_message(context)
+    text = await generate_scheduled_agent_message(bot, telegram_id, context, telegram_id)
     await bot.send_message(
         chat_id=telegram_id,
         text=text,
@@ -133,7 +133,7 @@ async def send_weekly_report(bot: Bot, telegram_id: int) -> None:
     if not context:
         return
 
-    text = generate_scheduled_message(context)
+    text = await generate_scheduled_agent_message(bot, telegram_id, context, telegram_id)
     await bot.send_message(chat_id=telegram_id, text=text)
     save_ai_response(telegram_id, text)
 

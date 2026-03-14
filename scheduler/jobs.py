@@ -13,6 +13,7 @@ from scheduler.logic import (
     broadcast_plan_archive, broadcast_plan_generate,
 )
 from scheduler.nudges import check_and_send_nudges
+from scheduler.periodization import advance_all_mesocycles  # Фаза 12.2
 from config import (
     SCHEDULE_MAX_MORNING, SCHEDULE_MAX_AFTERNOON, SCHEDULE_MAX_EVENING,
     DAILY_SUMMARY_TIME, WEEKLY_SUMMARY_DAY,
@@ -87,6 +88,17 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
         replace_existing=True,
     )
     logger.info(f"Weekly report scheduled: Sunday 21:00")
+
+    # ── Мезоцикл — воскресенье 21:15 (между weekly report и L4) ─────────────
+    scheduler.add_job(
+        advance_all_mesocycles, "cron",
+        day_of_week="sun",
+        hour=21, minute=15,
+        args=[bot],
+        id="mesocycle_advance",
+        replace_existing=True,
+    )
+    logger.info("Mesocycle advance scheduled: Sunday 21:15")
 
     # ── L4 Intelligence — воскресенье 21:30 (после weekly report) ────────────
     scheduler.add_job(
