@@ -848,6 +848,7 @@ async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None
     from config import MODEL
     from db.queries.training_plan import (
         save_training_plan, get_next_week_start, make_plan_id,
+        get_archived_plans,
     )
     from db.queries.memory import (
         get_l0_surface, get_l1_deep_bio,
@@ -938,6 +939,35 @@ async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None
     # Избегаемые упражнения
     avoided = ", ".join(l3.get("avoided_exercises") or []) or "нет"
 
+    # История предыдущих планов (последние 3 архивных)
+    past_plans = get_archived_plans(uid, limit=3)
+    if past_plans:
+        import json as _json_ph
+        plan_history_lines = []
+        for pp in past_plans:
+            try:
+                days_data = _json_ph.loads(pp["plan_json"])
+                workout_labels = [
+                    d.get("label", d.get("type", ""))
+                    for d in days_data
+                    if d.get("type") not in ("rest", "recovery") and d.get("label")
+                ]
+                labels_str = " | ".join(workout_labels[:4])
+                if len(workout_labels) > 4:
+                    labels_str += f" +{len(workout_labels) - 4} ещё"
+            except Exception:
+                labels_str = "данные недоступны"
+            compl = (
+                f"{pp['completion_pct']:.0f}%"
+                if pp.get("completion_pct") is not None else "нет данных"
+            )
+            plan_history_lines.append(
+                f"  Неделя {pp['week_start']}: [{labels_str}] — выполнено {compl}"
+            )
+        plan_history = "\n".join(plan_history_lines)
+    else:
+        plan_history = "нет архивных планов (первая неделя)"
+
     # Preferred days
     preferred_days = ", ".join(l3.get("preferred_days") or []) or "любые"
     session_min = l3.get("avg_session_min") or 60
@@ -984,6 +1014,7 @@ async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None
         l4_digest=l4_digest,
         min_workouts=min_workouts,
         max_workouts=max_workouts,
+        plan_history=plan_history,
         preferred_days=preferred_days,
         session_min=session_min,
         avoided_exercises=avoided,

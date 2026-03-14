@@ -689,6 +689,33 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
         if active_plan:
             memory_blocks.append(active_plan)
 
+    # Episodic memory (Фаза 10.5): важные эпизоды (~80-150 tok)
+    try:
+        from db.queries.episodic import format_episodic_context
+        episodic = format_episodic_context(uid, limit=8)
+        if episodic:
+            memory_blocks.append(episodic)
+    except Exception:
+        pass  # эпизодическая память — некритична, не блокируем основной поток
+
+    # XP/уровень (Фаза 10.4): для персонализации мотивации (~30 tok)
+    try:
+        from db.queries.gamification import get_user_level_info
+        xp_info = get_user_level_info(uid)
+        if xp_info and xp_info["total_xp"] > 0:
+            xp_line = (
+                f"## Прогресс атлета (XP)\n"
+                f"Уровень {xp_info['current_level']} — {xp_info['level_name']} "
+                f"| {xp_info['total_xp']} XP"
+            )
+            if xp_info.get("streak_days", 0) > 1:
+                xp_line += f" | Стрик: {xp_info['streak_days']} дн. 🔥"
+            if xp_info.get("xp_to_next_level", 0) > 0:
+                xp_line += f" | До следующего уровня: {xp_info['xp_to_next_level']} XP"
+            memory_blocks.append(xp_line)
+    except Exception:
+        pass
+
     # ── Компонуем system prompt ──────────────────────────────────────────
     base_system = get_system_prompt(mode)
     if memory_blocks:

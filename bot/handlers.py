@@ -17,7 +17,7 @@ from db.queries.fitness_metrics import (
 )
 from db.connection import get_connection
 from ai.context_builder import build_layered_context, maybe_compress_context
-from ai.client import generate_chat_response_streaming
+from ai.client import generate_chat_response_streaming, generate_agent_response
 from ai.response_parser import (
     detect_health_alert, is_workout_report, is_metrics_report, is_nutrition_report,
     parse_workout_from_message, parse_metrics_from_message, parse_nutrition_from_message
@@ -28,7 +28,8 @@ from db.writer import (
 )
 from bot.keyboards import (
     kb_fitness_level, kb_goal, kb_workout_time, kb_reminder,
-    kb_health_check, kb_training_location,
+    kb_health_check, kb_training_location, kb_training_days,
+    kb_main_menu, kb_back_to_menu,
 )
 from config import (
     HEALTH_KEYWORDS, OPENAI_API_KEY,
@@ -69,6 +70,20 @@ LOCATION_LABELS = {
     "gym":      "в зале 🏋️",
     "outdoor":  "на улице 🌳",
     "flexible": "по-разному 🔄",
+}
+DAYS_MAP = {
+    "days_3x":    ["пн", "ср", "пт"],
+    "days_4x":    ["пн", "вт", "чт", "пт"],
+    "days_5x":    ["пн", "вт", "ср", "чт", "пт"],
+    "days_daily": ["пн", "вт", "ср", "чт", "пт", "сб", "вс"],
+    "days_flex":  [],
+}
+DAYS_LABELS = {
+    "days_3x":    "3 раза в неделю",
+    "days_4x":    "4 раза в неделю",
+    "days_5x":    "5 раз в неделю",
+    "days_daily": "ежедневно",
+    "days_flex":  "как получится",
 }
 
 
@@ -374,18 +389,79 @@ async def _handle_test_step(
         )
 
 
+async def _process_user_input(
+    tg_id: int,
+    text: str,
+    update: Update,
+) -> None:
+    """
+    Общая логика обработки любого пользовательского ввода (текст или голос).
+    Вызывается как из handle_message, так и из handle_voice.
+
+    Порядок:
+    1. Сохранить сообщение в БД
+    2. Regex-парсинг тренировки / метрик / питания (fallback, пока нет Tool Use)
+    3. Сжатие / сброс контекста по бюджету токенов
+    4. Генерация ответа через AI (стриминг)
+    5. Сохранить ответ AI в БД
+    """
+    # 1. Сохраняем входящее сообщение
+    save_user_message(tg_id, text)
+
+    # 2. Regex-парсеры (fallback до Tool Use в 10.1)
+    if is_workout_report(text):
+        parsed_workout = parse_workout_from_message(text)
+        if parsed_workout:
+            save_workout_from_parsed(tg_id, parsed_workout)
+
+    if is_metrics_report(text):
+        parsed_metrics = parse_metrics_from_message(text)
+        if parsed_metrics:
+            save_metrics_from_parsed(tg_id, parsed_metrics)
+
+    if is_nutrition_report(text):
+        parsed_nutrition = parse_nutrition_from_message(text)
+        if parsed_nutrition:
+            save_nutrition_from_parsed(tg_id, parsed_nutrition)
+
+    # 3. Авто-суммаризация / inactivity reset
+    compress_result = await maybe_compress_context(tg_id)
+    if compress_result == "reset":
+        logger.info(f"[CTX] Inactivity reset applied for {tg_id}")
+    elif compress_result == "compress":
+        logger.info(f"[CTX] Token budget compression applied for {tg_id}")
+
+    # 4. Генерация ответа AI — агентный цикл (Tool Use, Фаза 10.1)
+    try:
+        await update.message.chat.send_action("typing")
+        context = build_layered_context(tg_id, text)
+        bot = update.message.get_bot()
+        response = await generate_agent_response(
+            bot=bot,
+            chat_id=update.message.chat_id,
+            context=context,
+            user_message=text,
+            tg_id=tg_id,
+        )
+        # 5. Сохраняем ответ
+        if response:
+            save_ai_response(tg_id, response)
+    except Exception as e:
+        logger.error(f"AI processing error for {tg_id}: {e}")
+        await update.message.reply_text(
+            "Что-то пошло не так. Попробуй ещё раз."
+        )
+
+
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Основной обработчик текстовых сообщений."""
     tg = update.effective_user
     text = update.message.text.strip()
 
-    # ── Подтверждение сброса ─────────────────────────────────────────────────
-    if ctx.user_data.get("awaiting_reset_confirm"):
-        ctx.user_data.pop("awaiting_reset_confirm")
-        if text.upper() == "УДАЛИТЬ":
-            await _handle_reset_confirmed(update, tg.id)
-        else:
-            await update.message.reply_text("Отмена. Данные не тронуты.")
+    # ── Ожидание текста рассылки (admin) ─────────────────────────────────────
+    if ctx.user_data.get("admin_broadcast_pending"):
+        from bot.admin import handle_admin_broadcast
+        await handle_admin_broadcast(update, ctx)
         return
 
     # ── Онбординг state machine ───────────────────────────────────────────────
@@ -418,47 +494,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         save_user_message(tg.id, text)
         return
 
-    # ── Сохранить сообщение ───────────────────────────────────────────────────
-    save_user_message(tg.id, text)
-
-    # ── Попытка разобрать отчёт о тренировке ─────────────────────────────────
-    if is_workout_report(text):
-        parsed_workout = parse_workout_from_message(text)
-        if parsed_workout:
-            save_workout_from_parsed(tg.id, parsed_workout)
-
-    if is_metrics_report(text):
-        parsed_metrics = parse_metrics_from_message(text)
-        if parsed_metrics:
-            save_metrics_from_parsed(tg.id, parsed_metrics)
-
-    if is_nutrition_report(text):
-        parsed_nutrition = parse_nutrition_from_message(text)
-        if parsed_nutrition:
-            save_nutrition_from_parsed(tg.id, parsed_nutrition)
-
-    # ── Авто-суммаризация / inactivity reset ─────────────────────────────────
-    compress_result = await maybe_compress_context(tg.id)
-    if compress_result == "reset":
-        logger.info(f"[CTX] Inactivity reset applied for {tg.id}")
-    elif compress_result == "compress":
-        logger.info(f"[CTX] Token budget compression applied for {tg.id}")
-
-    # ── Генерация ответа (стриминг) ───────────────────────────────────────────
-    try:
-        await update.message.chat.send_action("typing")
-        context = build_layered_context(tg.id, text)
-        bot = update.message.get_bot()
-        response = await generate_chat_response_streaming(
-            bot, update.message.chat_id, context, text
-        )
-        if response:
-            save_ai_response(tg.id, response)
-    except Exception as e:
-        logger.error(f"Handler error for {tg.id}: {e}")
-        await update.message.reply_text(
-            "Что-то пошло не так. Попробуй ещё раз."
-        )
+    # ── Обработка ввода (парсинг + AI-ответ) ─────────────────────────────────
+    await _process_user_input(tg.id, text, update)
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -529,7 +566,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # ── Онбординг: место тренировки ──────────────────────────────────────────
+    # ── Онбординг: место тренировки → спрашиваем дни ─────────────────────────
     if data in LOCATION_MAP:
         location = LOCATION_MAP[data]
         user = get_user(tg.id)
@@ -538,11 +575,27 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         label = LOCATION_LABELS[location]
         await query.edit_message_text(
             f"Тренируешься {label} — записал ✅\n\n"
+            "Сколько дней в неделю планируешь тренироваться?",
+            reply_markup=kb_training_days()
+        )
+        return
+
+    # ── Онбординг: дни недели → завершение ───────────────────────────────────
+    if data in DAYS_MAP:
+        import json
+        days = DAYS_MAP[data]
+        label = DAYS_LABELS[data]
+        user = get_user(tg.id)
+        if user:
+            upsert_training_intel(user["id"], preferred_days=json.dumps(days, ensure_ascii=False))
+        await query.edit_message_text(
+            f"Тренировки {label} — записал ✅\n\n"
             "Настройка завершена! 💪\n"
             "Буду присылать чек-ины и следить за прогрессом.\n\n"
             "Посмотри свой профиль: /profile\n"
             "Режим на сегодня: /mode",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=kb_main_menu(),
         )
         return
 
@@ -614,8 +667,251 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # ── Главное меню (menu:*) — Фаза 11 ──────────────────────────────────────
+    if data.startswith("menu:"):
+        await _handle_menu_callback(query, ctx, tg, data[5:])
+        return
+
+    # ── Сброс данных (reset:*) — Фаза 11 ─────────────────────────────────────
+    if data.startswith("reset:"):
+        action = data[6:]
+        if action == "confirm":
+            await _handle_reset_confirmed_inline(query, tg.id)
+        else:
+            await query.edit_message_text("Отмена. Данные не тронуты. 👍")
+        return
+
+    # ── Пауза (stop:*) — Фаза 11 ─────────────────────────────────────────────
+    if data.startswith("stop:"):
+        await _handle_stop_callback(query, ctx, tg, data[5:])
+        return
+
+    # ── Админ-панель (adm:*) ──────────────────────────────────────────────────
+    if data.startswith("adm:"):
+        from bot.admin import handle_admin_callback
+        await handle_admin_callback(update, ctx, data[4:])
+        return
+
     # ── Прочие ───────────────────────────────────────────────────────────────
     await query.edit_message_text("Принято.")
+
+
+async def _handle_menu_callback(
+    query, ctx: ContextTypes.DEFAULT_TYPE, tg, action: str
+) -> None:
+    """
+    Обрабатывает все callback из главного меню (menu:*) — Фаза 11.
+    Переиспользует логику команд через повторный вызов с искусственным update.
+    """
+    user = get_user(tg.id)
+
+    # ── Главная страница меню ────────────────────────────────────────────────
+    if action == "home":
+        from config import get_trainer_mode
+        mode = get_trainer_mode()
+        mode_emoji = "🔥" if mode == "MAX" else "🌿"
+        name = (user.get("name") or tg.first_name) if user else tg.first_name
+        streak = get_streak(user["id"]) if user else 0
+        streak_str = f"🔥 {streak} дней стрик\n" if streak else ""
+        xp_str = ""
+        try:
+            from db.queries.gamification import get_user_level_info
+            xp_info = get_user_level_info(user["id"]) if user else None
+            if xp_info:
+                xp_str = f"  {xp_info['level_name']} · {xp_info['total_xp']} XP\n"
+        except Exception:
+            pass
+        text = (
+            f"👋 Привет, *{name}*!\n"
+            f"{mode_emoji} Режим: *{mode}*\n"
+            f"{streak_str}"
+            f"{xp_str}"
+            "\nЧто будем делать?"
+        )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_main_menu())
+        return
+
+    # ── Статистика ──────────────────────────────────────────────────────────
+    if action == "stats":
+        if not user:
+            await query.answer("Нет данных. Напиши /start", show_alert=True)
+            return
+        from db.queries.workouts import get_weekly_stats, get_streak
+        from db.queries.stats import get_all_time_stats
+        from config import get_trainer_mode
+        from bot.keyboards import kb_stats_quick
+        weekly = get_weekly_stats(user["id"])
+        alltime = get_all_time_stats(user["id"])
+        streak = get_streak(user["id"])
+        mode = get_trainer_mode()
+        mode_emoji = "🔥" if mode == "MAX" else "🌿"
+        done = weekly['workouts_done']
+        total = max(weekly['workouts_total'], 1)
+        filled = min(10, round(done / total * 10))
+        bar = "█" * filled + "░" * (10 - filled)
+        text = (
+            f"📊 *Статистика {user['name'] or 'атлета'}*\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "*Эта неделя:*\n"
+            f"`[{bar}]` {done}/{total} тренировок\n"
+            f"• Ср. интенсивность: *{weekly['avg_intensity']}/10*\n"
+            f"• Всего минут: *{weekly['total_minutes']}*\n"
+            f"• Ср. сон: *{weekly['avg_sleep']} ч*\n"
+            f"• Ср. энергия: *{weekly['avg_energy']}/5*\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "*За всё время:*\n"
+            f"• Тренировок: *{alltime['done_workouts']}*\n"
+            f"• Стрик: 🔥 *{streak} дней*\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            f"{mode_emoji} Режим сегодня: *{mode}*"
+        )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_stats_quick())
+        return
+
+    # ── История (с выбором периода) ──────────────────────────────────────────
+    if action in ("history", "history_7", "history_14", "history_30", "history_90"):
+        if not user:
+            await query.answer("Нет данных. Напиши /start", show_alert=True)
+            return
+        days_map = {"history": 7, "history_7": 7, "history_14": 14, "history_30": 30, "history_90": 90}
+        days = days_map[action]
+        from bot.commands import _send_history
+        # Отвечаем на callback, затем отправляем новое сообщение
+        await query.answer()
+        await _send_history(query.message, user, days)
+        return
+
+    # ── Ачивки ──────────────────────────────────────────────────────────────
+    if action == "achievements":
+        if not user:
+            await query.answer("Нет данных. Напиши /start", show_alert=True)
+            return
+        from db.queries.gamification import format_achievements_message
+        from bot.keyboards import kb_achievements_quick
+        try:
+            msg = format_achievements_message(user["id"])
+        except Exception as e:
+            logger.error(f"[MENU] achievements error: {e}")
+            msg = "⚠️ Не удалось загрузить данные. Попробуй позже."
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=kb_achievements_quick())
+        return
+
+    # ── Профиль — редирект на команду ───────────────────────────────────────
+    if action in ("profile", "test", "plan", "setup", "export"):
+        cmd_map = {
+            "profile": "/profile",
+            "test":    "/test",
+            "plan":    "/plan",
+            "setup":   "/setup",
+            "export":  "/export",
+        }
+        await query.answer(f"Открываю {cmd_map[action]}", show_alert=False)
+        await query.message.reply_text(
+            f"Использую {cmd_map[action]} — секунду...",
+        )
+        # Запускаем соответствующую команду через message
+        from bot import commands as cmds
+        handler_map = {
+            "profile": cmds.cmd_profile,
+            "test":    cmds.cmd_test,
+            "plan":    cmds.cmd_plan,
+            "setup":   cmds.cmd_setup,
+            "export":  cmds.cmd_export,
+        }
+        # Создаём mock update для команды
+        class _MockUpdate:
+            effective_user = tg
+            message = query.message
+        class _MockCtx:
+            args = []
+            user_data = ctx.user_data
+            bot_data = ctx.bot_data
+        await handler_map[action](_MockUpdate(), _MockCtx())
+        return
+
+    await query.answer("Неизвестное действие", show_alert=True)
+
+
+async def _handle_stop_callback(query, ctx, tg, action: str) -> None:
+    """Обрабатывает callback выбора паузы (stop:*) — Фаза 11."""
+    from db.queries.user import deactivate_user
+    from bot.keyboards import kb_back_to_menu
+
+    if action == "indefinite":
+        deactivate_user(tg.id)
+        await query.edit_message_text(
+            "Поставил на паузу. 🛑\n"
+            "Напоминать не буду. Когда будешь готов — /start",
+            reply_markup=kb_back_to_menu(),
+        )
+        return
+
+    try:
+        days = int(action)
+    except ValueError:
+        await query.answer("Ошибка", show_alert=True)
+        return
+
+    deactivate_user(tg.id)
+    resume_at = datetime.datetime.now() + datetime.timedelta(days=days)
+    scheduler = ctx.bot_data.get("scheduler")
+
+    if scheduler:
+        from db.queries.user import activate_user as _activate
+
+        async def _resume(bot, telegram_id: int) -> None:
+            _activate(telegram_id)
+            try:
+                await bot.send_message(chat_id=telegram_id,
+                                       text="⏰ Пауза закончилась! Возобновляю работу. /start")
+            except Exception:
+                pass
+
+        scheduler.add_job(
+            _resume, "date",
+            run_date=resume_at,
+            args=[query.message.get_bot(), tg.id],
+            id=f"resume_{tg.id}",
+            replace_existing=True,
+        )
+
+    resume_str = resume_at.strftime("%d.%m.%Y")
+    await query.edit_message_text(
+        f"Поставил на паузу на *{days} дн.* 🛑\n"
+        f"Автоматически вернусь *{resume_str}*.\n"
+        "Если раньше — /start",
+        parse_mode="Markdown",
+        reply_markup=kb_back_to_menu(),
+    )
+
+
+async def _handle_reset_confirmed_inline(query, telegram_id: int) -> None:
+    """Полный сброс данных пользователя через inline кнопку (Фаза 11)."""
+    conn = get_connection()
+    user = get_user(telegram_id)
+    if not user:
+        await query.edit_message_text("Данных не найдено.")
+        return
+    uid = user["id"]
+    tables = [
+        "conversation_context", "reminders", "checkins",
+        "weekly_summaries", "metrics", "workouts",
+        "memory_athlete", "memory_nutrition", "memory_training", "memory_intelligence",
+        "user_profile",
+    ]
+    for table in tables:
+        try:
+            conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (uid,))
+        except Exception:
+            pass
+    try:
+        conn.execute("DELETE FROM user_profile WHERE telegram_id = ?", (telegram_id,))
+    except Exception:
+        pass
+    conn.commit()
+    await query.edit_message_text(
+        "✅ Все данные удалены.\nНапиши /start чтобы начать заново."
+    )
 
 
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -675,56 +971,136 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
     # ── Дальше обрабатываем точно как текстовое сообщение ────────────────────
-    save_user_message(tg.id, text)
+    await _process_user_input(tg.id, text, update)
 
-    if is_workout_report(text):
-        parsed_workout = parse_workout_from_message(text)
-        if parsed_workout:
-            save_workout_from_parsed(tg.id, parsed_workout)
 
-    if is_metrics_report(text):
-        parsed_metrics = parse_metrics_from_message(text)
-        if parsed_metrics:
-            save_metrics_from_parsed(tg.id, parsed_metrics)
+async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик фото — Claude Vision API (Фаза 10.3).
 
-    if is_nutrition_report(text):
-        parsed_nutrition = parse_nutrition_from_message(text)
-        if parsed_nutrition:
-            save_nutrition_from_parsed(tg.id, parsed_nutrition)
+    Сценарии:
+    1. Фото еды → Claude оценивает КБЖУ и сохраняет в nutrition_log
+    2. Фото прогресса → Claude анализирует изменения тела
+    3. Любое другое фото → Claude описывает и комментирует контекстно
+    """
+    import base64
+    tg = update.effective_user
 
-    await maybe_compress_context(tg.id)   # token budget / inactivity check
+    user = get_user(tg.id)
+    if not user:
+        await update.message.reply_text("Напиши /start чтобы начать.")
+        return
+
+    # Берём самое большое фото из набора
+    photo = update.message.photo[-1]
+    caption = (update.message.caption or "").strip()
+
+    status_msg = await update.message.reply_text("📸 Анализирую фото...")
 
     try:
-        await update.message.chat.send_action("typing")
-        context = build_layered_context(tg.id, text)
-        bot = update.message.get_bot()
-        response = await generate_chat_response_streaming(
-            bot, update.message.chat_id, context, text
+        photo_file = await photo.get_file()
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+        await photo_file.download_to_drive(tmp_path)
+
+        with open(tmp_path, "rb") as f:
+            image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+        # Определяем тип фото по подписи
+        cap_low = caption.lower()
+        is_food = any(w in cap_low for w in [
+            "еда", "ем", "поел", "обед", "ужин", "завтрак", "блюдо",
+            "food", "meal", "eat", "калор", "кбжу",
+        ])
+        is_progress = any(w in cap_low for w in [
+            "прогресс", "форм", "тело", "progress", "physique",
+            "до", "после", "результат",
+        ])
+
+        if is_food:
+            vision_prompt = (
+                "Ты — спортивный диетолог. Проанализируй фото еды.\n"
+                "Оцени примерное КБЖУ. Начни ответ строкой:\n"
+                "'Ккал: ~[N], Б: ~[N]г, Ж: ~[N]г, У: ~[N]г'\n"
+                "Затем 2-3 предложения о питательности и рекомендации тренера."
+            )
+            if caption:
+                vision_prompt += f"\nПользователь написал: '{caption}'"
+        elif is_progress:
+            vision_prompt = (
+                "Ты — персональный тренер Алекс. Проанализируй фото прогресса атлета.\n"
+                "Опиши видимые изменения в форме и рельефе. "
+                "Будь конкретным и мотивирующим. 3-5 предложений."
+            )
+            if caption:
+                vision_prompt += f"\nКонтекст: '{caption}'"
+        else:
+            vision_prompt = (
+                "Ты — персональный тренер Алекс. Пользователь прислал фото.\n"
+                "Если связано с тренировками, едой или здоровьем — "
+                "прокомментируй как тренер. Иначе ответь дружелюбно."
+            )
+            if caption:
+                vision_prompt += f"\nПодпись: '{caption}'"
+
+        from ai.client import get_async_client
+        from config import MODEL
+        async_client = get_async_client()
+
+        response = await async_client.messages.create(
+            model=MODEL,
+            max_tokens=600,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": image_data,
+                        },
+                    },
+                    {"type": "text", "text": vision_prompt},
+                ],
+            }]
         )
-        if response:
-            save_ai_response(tg.id, response)
+
+        reply_text = response.content[0].text.strip()
+
+        # Авто-сохранение КБЖУ из фото еды
+        if is_food:
+            import re as _re
+            cal_m  = _re.search(r"Ккал[:\s~]*(\d+)", reply_text, _re.IGNORECASE)
+            prot_m = _re.search(r"Б[:\s~]*(\d+)\s*г",  reply_text, _re.IGNORECASE)
+            fat_m  = _re.search(r"Ж[:\s~]*(\d+)\s*г",  reply_text, _re.IGNORECASE)
+            carb_m = _re.search(r"У[:\s~]*(\d+)\s*г",  reply_text, _re.IGNORECASE)
+
+            nut = {}
+            if cal_m:  nut["calories"]  = int(cal_m.group(1))
+            if prot_m: nut["protein_g"] = float(prot_m.group(1))
+            if fat_m:  nut["fat_g"]     = float(fat_m.group(1))
+            if carb_m: nut["carbs_g"]   = float(carb_m.group(1))
+
+            if nut:
+                save_nutrition_from_parsed(tg.id, nut)
+                reply_text += "\n\n✅ _КБЖУ записаны в журнал_"
+                logger.info(f"[VISION] food KBJU saved for {tg.id}: {nut}")
+
+        await status_msg.edit_text(reply_text, parse_mode="Markdown")
+        save_user_message(tg.id, f"[фото]{': ' + caption if caption else ''}")
+        save_ai_response(tg.id, reply_text)
+
     except Exception as e:
-        logger.error(f"Voice handler AI error for {tg.id}: {e}")
-        await update.message.reply_text("Что-то пошло не так.")
+        logger.error(f"[VISION] error for {tg.id}: {e}")
+        await status_msg.edit_text(
+            "⚠️ Не удалось проанализировать фото. Попробуй ещё раз."
+        )
 
 
-async def _handle_reset_confirmed(update: Update, telegram_id: int) -> None:
-    """Полный сброс данных пользователя."""
-    conn = get_connection()
-    user = get_user(telegram_id)
-    if not user:
-        return
-    uid = user["id"]
-    tables = [
-        "conversation_context", "reminders", "checkins",
-        "weekly_summaries", "metrics", "workouts",
-        "memory_athlete", "memory_nutrition", "memory_training", "memory_intelligence",
-        "user_profile",
-    ]
-    for table in tables:
-        conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (uid,))
-    conn.execute("DELETE FROM user_profile WHERE telegram_id = ?", (telegram_id,))
-    conn.commit()
-    await update.message.reply_text(
-        "✅ Все данные удалены. Напиши /start чтобы начать заново."
-    )
+# _handle_reset_confirmed removed in Фаза 11 — replaced by _handle_reset_confirmed_inline

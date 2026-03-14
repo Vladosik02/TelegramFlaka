@@ -66,3 +66,19 @@ def touch_last_active(telegram_id: int) -> None:
         (datetime.datetime.now().isoformat(), telegram_id)
     )
     conn.commit()
+
+
+def get_all_active_users() -> list[dict]:
+    """Возвращает всех активных пользователей (active=1)."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM user_profile WHERE active = 1 ORDER BY last_active DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_users_count() -> int:
+    """Общее количество пользователей (включая неактивных)."""
+    conn = get_connection()
+    row = conn.execute("SELECT COUNT(*) FROM user_profile").fetchone()
+    return row[0] if row else 0

@@ -1,6 +1,9 @@
 """
-ai/client.py — Обёртка над Anthropic API (sync + async streaming).
+ai/client.py — Обёртка над Anthropic API (sync + async streaming + Tool Use).
+
+Фаза 10.1 — добавлен агентный цикл generate_agent_response().
 """
+import json
 import logging
 import anthropic
 from config import ANTHROPIC_API_KEY, MODEL, MAX_TOKENS
@@ -149,3 +152,146 @@ def generate_scheduled_message(context: dict) -> str:
     prompt = context.get("prompt", "")
     messages = [{"role": "user", "content": prompt}]
     return ask(system, messages)
+
+
+# ── Агентный цикл с Tool Use (Фаза 10.1) ─────────────────────────────────
+
+MAX_AGENT_ITERATIONS = 5  # защита от бесконечного цикла
+
+
+async def generate_agent_response(
+    bot,
+    chat_id: int,
+    context: dict,
+    user_message: str,
+    tg_id: int,
+    tools: list[dict] = None,
+) -> str:
+    """
+    Агентный цикл с Claude Tool Use:
+    user msg → Claude → [tool_use] → execute → Claude → [final text]
+
+    Алгоритм:
+    1. Отправляем placeholder «✍️»
+    2. Первый запрос к Claude с инструментами
+    3. Если Claude возвращает tool_use — выполняем инструменты, добавляем результаты
+    4. Повторяем до получения end_turn (только текст) или MAX_AGENT_ITERATIONS
+    5. Стримим финальный текстовый ответ
+
+    Graceful degradation: если ошибка Tool Use — fallback на обычный стриминг.
+    """
+    if tools is None:
+        from ai.tools import ALL_TOOLS
+        tools = ALL_TOOLS
+
+    from ai.tool_executor import execute_tool_calls
+
+    async_client = get_async_client()
+    system = context.get("system", "")
+    history = context.get("history", [])
+
+    # Начальные сообщения
+    messages = list(history) + [{"role": "user", "content": user_message}]
+
+    sent_msg = await bot.send_message(chat_id=chat_id, text="✍️")
+    final_text = ""
+
+    try:
+        for iteration in range(MAX_AGENT_ITERATIONS):
+            response = await async_client.messages.create(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=system,
+                tools=tools,
+                messages=messages,
+            )
+
+            # Извлекаем текстовые блоки и tool_use блоки
+            text_blocks = [b for b in response.content if b.type == "text"]
+            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+
+            # Если нет tool_use — это финальный ответ
+            if not tool_use_blocks or response.stop_reason == "end_turn":
+                if text_blocks:
+                    final_text = "".join(b.text for b in text_blocks)
+                break
+
+            # Есть tool_use → выполняем и продолжаем цикл
+            logger.info(
+                f"[AGENT] iter={iteration+1} tools_called="
+                f"{[t.name for t in tool_use_blocks]} user={tg_id}"
+            )
+
+            # Добавляем ответ Claude с tool_use в историю
+            messages.append({"role": "assistant", "content": response.content})
+
+            # Выполняем инструменты
+            tool_results = await execute_tool_calls(
+                tg_id=tg_id,
+                tool_uses=tool_use_blocks,
+                bot=bot,
+                chat_id=chat_id,
+            )
+
+            # Добавляем результаты инструментов
+            messages.append({
+                "role": "user",
+                "content": tool_results,
+            })
+
+            # Частичный прогресс: показываем что инструменты запустились
+            if text_blocks:
+                partial = "".join(b.text for b in text_blocks)
+                if partial:
+                    try:
+                        await sent_msg.edit_text(partial + " ⚙️")
+                    except Exception:
+                        pass
+
+        # Стримим/показываем финальный ответ
+        if final_text:
+            # Разбиваем на чанки для эффекта стриминга
+            chunk_size = STREAM_UPDATE_EVERY
+            displayed = 0
+            while displayed < len(final_text):
+                end = min(displayed + chunk_size, len(final_text))
+                try:
+                    if end < len(final_text):
+                        await sent_msg.edit_text(final_text[:end] + " ▍")
+                    else:
+                        await sent_msg.edit_text(final_text)
+                except Exception:
+                    pass
+                displayed = end
+
+        elif not final_text:
+            # Fallback: нет финального текста
+            await sent_msg.edit_text("✅ Готово.")
+            final_text = "✅ Готово."
+
+    except anthropic.APIStatusError as e:
+        logger.error(f"[AGENT] API error {e.status_code}: {e.message}")
+        # Graceful degradation — пробуем без инструментов
+        logger.info(f"[AGENT] Falling back to streaming for user={tg_id}")
+        try:
+            await sent_msg.delete()
+        except Exception:
+            pass
+        return await ask_streaming(bot, chat_id, system, messages[:len(history)+1])
+
+    except anthropic.APIConnectionError:
+        logger.error(f"[AGENT] Connection error for user={tg_id}")
+        await sent_msg.edit_text("⚠️ Нет связи с AI. Проверь интернет.")
+        return ""
+
+    except Exception as e:
+        logger.error(f"[AGENT] Unexpected error for user={tg_id}: {e}")
+        # Graceful degradation
+        logger.info(f"[AGENT] Falling back to streaming for user={tg_id}")
+        try:
+            await sent_msg.delete()
+        except Exception:
+            pass
+        return await ask_streaming(bot, chat_id, system, messages[:len(history)+1])
+
+    return final_text

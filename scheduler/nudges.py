@@ -1,12 +1,13 @@
 """
-scheduler/nudges.py — Проактивные AI-нудж-сообщения (Фаза 8.4).
+scheduler/nudges.py — Проактивные AI-нудж-сообщения (Фазы 8.4 + 10.8).
 
-5 типов нудж-сообщений (правило-ориентированные, без доп. API-вызовов):
+6 типов нудж-сообщений (правило-ориентированные, без доп. API-вызовов):
   📉 drop           — 3+ дней без тренировки
   😴 recovery       — сон < 6ч, 3 дня подряд
   💪 pr_approaching — последний результат ≥ 90% от личного рекорда
   🔥 streak         — текущий стрик в N днях от рекорда
   🎯 goal_progress  — 40–65% недельного плана выполнено (≈ полпути)
+  ⚖️ weight_trend   — вес растёт/падает >3% за 14 дней (Фаза 10.8)
 
 Ключевые свойства:
   • Не более ОДНОГО нуджа на пользователя за запуск (приоритет: drop > recovery > pr > streak > goal).
@@ -68,14 +69,15 @@ def _was_nudge_sent_recently(user_id: int, nudge_type: str) -> bool:
     Суточный кулдаун для drop / recovery.
     """
     conn = get_connection()
+    _FMT = "%Y-%m-%d %H:%M:%S"  # SQLite datetime('now') format — space, not T
     if nudge_type in NUDGE_WEEKLY_COOLDOWN:
         cutoff = (
             datetime.datetime.now() - datetime.timedelta(days=7)
-        ).isoformat()
+        ).strftime(_FMT)
     else:
         cutoff = (
             datetime.datetime.now() - datetime.timedelta(hours=NUDGE_COOLDOWN_HOURS)
-        ).isoformat()
+        ).strftime(_FMT)
 
     row = conn.execute(
         "SELECT id FROM nudge_log WHERE user_id = ? AND nudge_type = ? AND sent_at > ?",
@@ -379,15 +381,109 @@ def _check_goal_nudge(uid: int) -> str | None:
     )
 
 
+# ─── Тип 6: ⚖️ Weight Trend Nudge (Фаза 10.8) ────────────────────────────────
+
+_WEIGHT_TREND_CHANGE_PCT = 3.0   # % изменения за 14 дней для триггера
+_WEIGHT_TREND_MIN_DAYS   = 5     # минимум 5 дней данных за 14 дней
+
+def _check_weight_trend_nudge(uid: int) -> str | None:
+    """
+    Триггер: вес изменился более чем на WEIGHT_TREND_CHANGE_PCT% за 14 дней.
+
+    Сравниваем средний вес первой половины периода со второй.
+    Если растёт при цели «похудеть» → предупреждение.
+    Если падает при цели «набрать массу» → предупреждение.
+    Если сильно меняется при цели «поддержание» → информация.
+    """
+
+    conn = get_connection()
+    today = datetime.date.today()
+    since_14 = (today - datetime.timedelta(days=14)).isoformat()
+    since_7  = (today - datetime.timedelta(days=7)).isoformat()
+
+    # Веса за первую половину периода (8-14 дней назад)
+    early_rows = conn.execute("""
+        SELECT weight_kg FROM metrics
+        WHERE user_id = ? AND date >= ? AND date < ?
+          AND weight_kg IS NOT NULL AND weight_kg > 0
+        ORDER BY date
+    """, (uid, since_14, since_7)).fetchall()
+
+    # Веса за вторую половину (последние 7 дней)
+    recent_rows = conn.execute("""
+        SELECT weight_kg FROM metrics
+        WHERE user_id = ? AND date >= ?
+          AND weight_kg IS NOT NULL AND weight_kg > 0
+        ORDER BY date
+    """, (uid, since_7)).fetchall()
+
+    if len(early_rows) < 2 or len(recent_rows) < 2:
+        return None  # недостаточно данных
+
+    total_points = len(early_rows) + len(recent_rows)
+    if total_points < _WEIGHT_TREND_MIN_DAYS:
+        return None
+
+    avg_early  = sum(r["weight_kg"] for r in early_rows)  / len(early_rows)
+    avg_recent = sum(r["weight_kg"] for r in recent_rows) / len(recent_rows)
+
+    if avg_early <= 0:
+        return None
+
+    change_pct = (avg_recent - avg_early) / avg_early * 100
+
+    if abs(change_pct) < _WEIGHT_TREND_CHANGE_PCT:
+        return None  # изменение в норме
+
+    # Получаем цель пользователя
+    goal_row = conn.execute(
+        "SELECT goal FROM user_profile WHERE id = ?", (uid,)
+    ).fetchone()
+    goal = (goal_row["goal"] or "") if goal_row else ""
+
+    direction = "вверх" if change_pct > 0 else "вниз"
+    change_abs = abs(avg_recent - avg_early)
+    arrow = "📈" if change_pct > 0 else "📉"
+
+    # Оцениваем соответствие цели
+    if change_pct > 0 and "похудеть" in goal:
+        tone = (
+            f"⚠️ Обрати внимание — вес идёт *вверх*, "
+            f"а твоя цель — похудеть. Проверь питание и дефицит калорий."
+        )
+    elif change_pct < 0 and "набрать массу" in goal:
+        tone = (
+            f"⚠️ Вес снижается, а твоя цель — набор массы. "
+            f"Возможно, нужно увеличить калорийность рациона."
+        )
+    elif abs(change_pct) > 5:
+        tone = (
+            f"Значительное изменение за короткий срок. "
+            f"Убедись, что всё идёт по плану."
+        )
+    else:
+        tone = f"Следи за динамикой и корректируй питание если нужно."
+
+    return (
+        f"{arrow} *Тренд веса*\n\n"
+        f"За последние 14 дней вес идёт *{direction}*: "
+        f"{avg_early:.1f} → {avg_recent:.1f} кг "
+        f"({'+' if change_pct > 0 else ''}{change_pct:.1f}%, "
+        f"{'+' if change_pct > 0 else ''}{change_abs:.1f} кг).\n\n"
+        f"{tone}"
+    )
+
+
 # ─── Диспетчер нудж-сообщений ─────────────────────────────────────────────────
 
-# Приоритет: drop (срочность) > recovery (здоровье) > pr > streak > goal
+# Приоритет: drop (срочность) > recovery (здоровье) > pr > streak > goal > weight
 _NUDGE_CHECKERS: list[tuple[str, callable]] = [
     ("drop",           _check_drop_nudge),
     ("recovery",       _check_recovery_nudge),
     ("pr_approaching", _check_pr_nudge),
     ("streak",         _check_streak_nudge),
     ("goal_progress",  _check_goal_nudge),
+    ("weight_trend",   _check_weight_trend_nudge),
 ]
 
 

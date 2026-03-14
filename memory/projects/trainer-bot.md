@@ -29,8 +29,10 @@ Telegram-бот личный тренер с двумя режимами (MAX/LI
 config.py
 db/schema.sql, connection.py, queries/*.py, writer.py
 ai/prompts/*.txt, context_builder.py, client.py, response_parser.py
-bot/keyboards.py, commands.py, handlers.py
-scheduler/logic.py, jobs.py
+bot/keyboards.py, commands.py, handlers.py, admin.py
+scheduler/logic.py, jobs.py, nudges.py
+tests/__init__.py, conftest.py, test_config.py, test_fitness_metrics.py,
+       test_nudges.py, test_training_plan.py
 main.py, backup.py
 Dockerfile, docker-compose.yml, deploy.sh, server-setup.sh
 .github/workflows/deploy.yml
@@ -59,7 +61,8 @@ Dockerfile, docker-compose.yml, deploy.sh, server-setup.sh
 | Фаза 8.2 — Fitness Metrics & /test | ✅ Реализовано (user_fitness_metrics, ACSM/NSCA нормализация) |
 | Фаза 8.3 — AI Workout Plan | ✅ Реализовано (training_plan, /plan, AI-персонаж Алекс, архивация вс 19:00, генерация вс 20:00) |
 | Фаза 8.4 — Proactive Nudges | ✅ Реализовано (scheduler/nudges.py, 5 типов, nudge_log anti-spam, 08:00 daily) |
-| Фаза 8.5 — Admin Tools | ⏳ |
+| Фаза 8.5 — Admin Tools + Tests | ✅ Реализовано (/admin, ADMIN_USER_ID, broadcast, triggers, pytest 117 тестов) |
+| **CI/CD деплой обновлён** | ✅ deploy.yml: check → test (pytest 117) → deploy; .dockerignore исключает tests/; .env.example + ADMIN_USER_ID |
 
 ## Фаза 7 — Beyond MVP (деталь)
 Notion: https://www.notion.so/31d8fb7a86e381dd8b3ae60dc4f880d6
@@ -82,7 +85,24 @@ Notion: https://www.notion.so/31e8fb7a86e38125af07c36c826cfbd3
 | **8.2 Fitness Metrics & /test** | ✅ Реализовано — user_fitness_metrics, piecewise ACSM/NSCA, L0 fitness_score |
 | **8.3 AI Workout Plan** | ✅ Реализовано — training_plan, /plan, Алекс-персонаж, вс 19:00/20:00, workouts.plan_id, monthly_summary интеграция |
 | **8.4 Proactive Nudges** | ✅ Реализовано — scheduler/nudges.py, 5 типов нудж, nudge_log, ежедневно 08:00 |
-| **8.5 Admin Tools** | ⏳ — /admin ADMIN_USER_ID |
+| **8.5 Admin Tools + Tests** | ✅ Реализовано — /admin, bot/admin.py, ADMIN_USER_ID, broadcast, triggers (6 задач), pytest 117 тестов |
+
+### 8.5 — Детали реализации
+- **`bot/admin.py`** (новый файл): вся логика панели отделена от commands.py
+- **`/admin`** — доступен только ADMIN_USER_ID из .env; остальным: «⛔ Доступ запрещён»
+- **Inline-меню**: Пользователи (список + стрик + last_active) → Задачи (APScheduler + next_run_time) → Рассылка (broadcast state machine) → Триггер (6 ручных запусков: morning/evening/daily/weekly/nudges/monthly)
+- **Callback-prefix**: `adm:home`, `adm:users`, `adm:jobs`, `adm:broadcast`, `adm:trigger`, `adm:trigger:{task}`
+- **`db.queries.user.get_all_active_users()`** — новая функция (список всех активных)
+- **`/help`** — показывает `/admin` только администратору (скрыт от обычных пользователей)
+- **`pytest>=7.0.0`** добавлен в requirements.txt
+
+### 8.5 — Тестовое покрытие (117 тестов, все GREEN)
+| Файл | Тестов | Покрытие |
+|------|--------|----------|
+| test_config.py | 17 | get_trainer_mode, все пороги, ADMIN_USER_ID |
+| test_fitness_metrics.py | 37 | normalize_*, compute_fitness_score, get_fitness_level, CRUD |
+| test_nudges.py | 40 | _days_word, _workouts_word, anti-spam, 5 чекеров, приоритет |
+| test_training_plan.py | 23 | make_plan_id, week_start, CRUD, архивация |
 
 ### 8.4 — Детали реализации
 - **5 типов нудж**: drop (3+ дня без тренировки) → recovery (сон < 6ч × 3 дня) → pr_approaching (≥ 90% от рекорда) → streak (до рекорда ≤ 3 дней) → goal_progress (40–65% плана)

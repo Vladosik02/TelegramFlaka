@@ -56,36 +56,76 @@ def parse_metrics_from_message(text: str) -> dict:
     result = {}
     text_lower = text.lower()
 
-    # Сон
-    sleep = re.search(r'спал\s*(\d+(?:[.,]\d+)?)\s*(?:ч|час)', text_lower)
+    # ─── Сон ─────────────────────────────────────────────────────────────────
+    # "спал 7ч", "спал 7 часов", "поспал 7.5", "проспала 8", "7 часов сна"
+    sleep = (
+        re.search(r'(?:спал|спала)\s*(\d+(?:[.,]\d+)?)\s*(?:ч|час|часов|часа)', text_lower)
+        or re.search(r'(?:поспал|поспала|проспал|проспала)\s*(\d+(?:[.,]\d+)?)', text_lower)
+        or re.search(r'(\d+(?:[.,]\d+)?)\s*(?:часов|часа)\s+сна', text_lower)
+        or re.search(r'сон\s*[:\-]?\s*(\d+(?:[.,]\d+)?)', text_lower)
+    )
     if sleep:
-        result["sleep_hours"] = float(sleep.group(1).replace(",", "."))
+        val = float(sleep.group(1).replace(",", "."))
+        if 2.0 <= val <= 24.0:
+            result["sleep_hours"] = val
 
-    # Вес
-    weight = re.search(r'(\d+(?:[.,]\d+)?)\s*кг', text_lower)
+    # ─── Вес ─────────────────────────────────────────────────────────────────
+    # "82 кг", "вес 82", "вешу 80.5", "весил 79"
+    weight = (
+        re.search(r'(\d+(?:[.,]\d+)?)\s*кг', text_lower)
+        or re.search(r'(?:вес|вешу|весил|весила|весит)\s*[:\-]?\s*(\d{2,3}(?:[.,]\d+)?)', text_lower)
+    )
     if weight:
-        result["weight_kg"] = float(weight.group(1).replace(",", "."))
+        val = float(weight.group(1).replace(",", "."))
+        if 30.0 <= val <= 250.0:
+            result["weight_kg"] = val
 
-    # Вода
-    water = re.search(r'(\d+(?:[.,]\d+)?)\s*л(?:итр)', text_lower)
+    # ─── Вода ────────────────────────────────────────────────────────────────
+    # "2л", "2 литра", "1.5 литров", "выпил 2 литра воды"
+    water = (
+        re.search(r'(\d+(?:[.,]\d+)?)\s*л(?:итр(?:а|ов)?)?(?=[\s\.,;!?]|$)', text_lower)
+        or re.search(r'(?:выпил|выпила|пил|пила)[^\d]*(\d+(?:[.,]\d+)?)\s*л', text_lower)
+    )
     if water:
-        result["water_liters"] = float(water.group(1).replace(",", "."))
+        val = float(water.group(1).replace(",", "."))
+        if 0.1 <= val <= 10.0:
+            result["water_liters"] = val
 
-    # Шаги
-    steps = re.search(r'(\d{4,6})\s*шаг', text_lower)
+    # ─── Шаги ────────────────────────────────────────────────────────────────
+    # "8000 шагов", "прошёл 10000", "прошла 6500 шагов"
+    steps = (
+        re.search(r'(\d{4,6})\s*шаг(?:ов|и|а)?', text_lower)
+        or re.search(r'(?:прошёл|прошла|пройдено|прошагал|прошагала)\s*(\d{4,6})', text_lower)
+    )
     if steps:
         result["steps"] = int(steps.group(1))
 
-    # Энергия (слова)
-    energy_map = {
-        "отлично": 5, "хорошо": 4, "нормально": 3,
-        "устал": 2, "совсем устал": 1, "плохо": 1,
-        "бодр": 5, "активен": 4,
-    }
-    for word, level in energy_map.items():
-        if word in text_lower:
-            result["energy"] = level
-            break
+    # ─── Энергия (числовая: "энергия 4", "энергия: 3") ───────────────────────
+    energy_num = re.search(r'энерги[яю]\s*[:\-]?\s*(\d)', text_lower)
+    if energy_num:
+        val = int(energy_num.group(1))
+        if 1 <= val <= 5:
+            result["energy"] = val
+    else:
+        # Словесная шкала
+        energy_map = {
+            "совсем устал": 1, "совсем устала": 1, "плохо": 1,
+            "устал": 2, "устала": 2,
+            "нормально": 3,
+            "хорошо": 4, "бодр": 4, "активен": 4, "активна": 4,
+            "отлично": 5, "энергичен": 5, "энергична": 5,
+        }
+        for word, level in energy_map.items():
+            if word in text_lower:
+                result["energy"] = level
+                break
+
+    # ─── Настроение числовое: "настроение 4", "настроение: 3" ────────────────
+    mood_num = re.search(r'настроени[еюя]\s*[:\-]?\s*(\d)', text_lower)
+    if mood_num:
+        val = int(mood_num.group(1))
+        if 1 <= val <= 5:
+            result["mood"] = val
 
     return result
 
@@ -276,6 +316,11 @@ def is_workout_report(text: str) -> bool:
 
 def is_metrics_report(text: str) -> bool:
     """Содержит ли данные о здоровье."""
-    keywords = ["спал", "вес", "кг", "ккал", "вода", "шагов", "шаги", "пульс"]
+    keywords = [
+        "спал", "спала", "поспал", "поспала", "проспал", "проспала",
+        "вес", "кг", "вешу", "весил", "весила",
+        "ккал", "вода", "шагов", "шаги", "шагал", "прошёл", "прошла",
+        "пульс", "энергия", "настроение", "сон",
+    ]
     text_lower = text.lower()
     return any(kw in text_lower for kw in keywords)

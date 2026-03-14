@@ -346,6 +346,59 @@ CREATE TABLE IF NOT EXISTS nudge_log (
     message_preview TEXT            -- первые 100 символов отправленного сообщения
 );
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ФАЗА 10 — INTELLIGENT AGENT & GAMIFICATION
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ─── Геймификация: XP и уровни ────────────────────────────────────────────
+-- Уровни: 1=Новичок(0), 2=Стартер(500), 3=Атлет(1500), 4=Боец(3000),
+--         5=Чемпион(5500), 6=Элита(9000), 7=Мастер(14000), 8=Легенда(21000)
+CREATE TABLE IF NOT EXISTS user_xp (
+    user_id         INTEGER PRIMARY KEY REFERENCES user_profile(id),
+    total_xp        INTEGER DEFAULT 0,
+    current_level   INTEGER DEFAULT 1,
+    level_name      TEXT DEFAULT 'Новичок',
+    last_xp_at      TEXT,
+    streak_days     INTEGER DEFAULT 0,      -- текущий streak тренировок
+    updated_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- ─── Ачивки ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS achievements (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    achievement_key TEXT NOT NULL,          -- "first_workout", "streak_7", "pr_beast", etc.
+    achievement_name TEXT NOT NULL,         -- "Первая тренировка 🏋️"
+    description     TEXT,                   -- описание ачивки
+    xp_reward       INTEGER DEFAULT 0,      -- сколько XP давала при разблокировке
+    unlocked_at     TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_id, achievement_key)
+);
+
+-- ─── Лог XP-транзакций ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS xp_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    xp_amount       INTEGER NOT NULL,       -- может быть отрицательным
+    reason          TEXT NOT NULL,          -- "workout", "pr", "streak_bonus", etc.
+    detail          TEXT,                   -- доп. описание (название упражнения и т.д.)
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- ─── Эпизодическая память (A-MEM/MemGPT-inspired) ────────────────────────
+-- TTL: personal_record=90д, insight=60д, goal_update=365д, conversation=30д
+CREATE TABLE IF NOT EXISTS episodic_memory (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES user_profile(id),
+    episode_type    TEXT NOT NULL,   -- personal_record | insight | goal_update | conversation | milestone
+    tags            TEXT DEFAULT '[]',  -- JSON: ["strength", "squat", "pr"]
+    summary         TEXT NOT NULL,      -- краткое описание (1-2 предложения для контекста)
+    detail          TEXT,               -- полные данные если нужны
+    importance      INTEGER DEFAULT 5 CHECK(importance BETWEEN 1 AND 10),
+    expires_at      TEXT,               -- NULL = не истекает
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
 -- ─── Индексы ──────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_workouts_user_date       ON workouts(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_metrics_user_date        ON metrics(user_id, date);
@@ -361,3 +414,7 @@ CREATE INDEX IF NOT EXISTS idx_fitness_metrics_user     ON user_fitness_metrics(
 CREATE INDEX IF NOT EXISTS idx_training_plan_user       ON training_plan(user_id, week_start);
 CREATE INDEX IF NOT EXISTS idx_training_plan_status     ON training_plan(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_nudge_log_user           ON nudge_log(user_id, nudge_type, sent_at);
+CREATE INDEX IF NOT EXISTS idx_achievements_user        ON achievements(user_id, achievement_key);
+CREATE INDEX IF NOT EXISTS idx_xp_log_user              ON xp_log(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_episodic_user_type       ON episodic_memory(user_id, episode_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_episodic_expires         ON episodic_memory(user_id, expires_at);
