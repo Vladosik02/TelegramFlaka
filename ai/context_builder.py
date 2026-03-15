@@ -766,6 +766,35 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
     except Exception:
         pass
 
+    # ── Контекстные подсказки действий (Фаза 13.7) ──────────────────────────
+    # Усиливаем инструкции системного промпта конкретными хинтами для текущего сообщения
+    action_hints: list[str] = []
+    if "food" in tags:
+        action_hints.append(
+            "🍽 Сообщение о еде → НЕМЕДЛЕННО вызови save_nutrition "
+            "(оцени КБЖУ сам если не указаны, не спрашивай)."
+        )
+    if "training" in tags:
+        action_hints.append(
+            "💪 Сообщение о тренировке → НЕМЕДЛЕННО вызови save_workout + "
+            "save_exercise_result (по одному на упражнение) + award_xp(100, \"workout\") + "
+            "save_episode(episode_type=\"training\", ...)."
+        )
+    if "health" in tags and "training" not in tags:
+        action_hints.append(
+            "⚠️ Упоминание самочувствия/здоровья → прочти L1 Deep Bio, "
+            "если нужно обнови athlete_card (травмы/ограничения)."
+        )
+    if "analytics" in tags:
+        action_hints.append(
+            "📊 Запрос аналитики → вызови get_weekly_stats и/или get_personal_records "
+            "для получения свежих данных из БД."
+        )
+    if "plan" in tags:
+        action_hints.append(
+            "📋 Запрос плана → вызови get_current_plan для получения актуального плана."
+        )
+
     # ── Компонуем system prompt ──────────────────────────────────────────
     base_system = get_system_prompt(mode)
     if memory_blocks:
@@ -779,6 +808,14 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
         )
     else:
         full_system = base_system
+
+    if action_hints:
+        hints_block = (
+            f"\n\n{'─' * 50}\n"
+            f"⚡ ДЕЙСТВИЯ ДЛЯ ЭТОГО СООБЩЕНИЯ:\n"
+            + "\n".join(f"• {h}" for h in action_hints)
+        )
+        full_system += hints_block
 
     history = get_recent_conversation(uid, limit=10)
 

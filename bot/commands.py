@@ -96,6 +96,12 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
 
+    # ── Сброс state machine при /start (Фаза 14.3) ───────────────────────────
+    # Очищаем onboarding_step, test_step, workout_flow и прочие состояния
+    for key in ("onboarding_step", "test_step", "test_data", "admin_broadcast_pending",
+                "workout_flow", "awaiting_custom_duration"):
+        ctx.user_data.pop(key, None)
+
     if user and user["active"]:
         mode = get_trainer_mode()
         mode_emoji = "🔥" if mode == "MAX" else "🌿"
@@ -820,4 +826,101 @@ async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "Это действие *нельзя отменить*.",
         parse_mode="Markdown",
         reply_markup=kb_reset_confirm(),
+    )
+
+
+async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /today — дашборд текущего дня: питание vs цели + тренировка.
+    Фаза 15.3.
+    """
+    tg = update.effective_user
+    user = get_user(tg.id)
+    if not user:
+        await update.message.reply_text("Напиши /start чтобы начать.")
+        return
+
+    from db.queries.nutrition import get_today_nutrition
+    from db.queries.workouts import get_today_workout
+    from bot.keyboards import kb_today_quick
+
+    today = datetime.date.today()
+    today_str = today.isoformat()
+    today_fmt = today.strftime("%-d %B").lower()  # "15 марта"
+
+    # Данные дня
+    nutrition = get_today_nutrition(user["id"])
+    workout = get_today_workout(user["id"])
+    l2 = get_l2_brief(user["id"]) or {}
+
+    # Цели из памяти
+    goal_cal  = l2.get("daily_calories") or 2500
+    goal_prot = l2.get("protein_g")      or 175
+    goal_fat  = l2.get("fat_g")          or 80
+    goal_carb = l2.get("carbs_g")        or 300
+    goal_water = 3000  # мл = 3 литра по умолчанию
+
+    def _bar(current, target, width=10) -> str:
+        if not target or target <= 0:
+            return "░" * width
+        pct = min(current / target, 1.0)
+        filled = round(pct * width)
+        return "█" * filled + "░" * (width - filled)
+
+    def _fmt(val, default=0):
+        return val if val is not None else default
+
+    lines = [f"📊 *Сегодня — {today_fmt}*\n"]
+
+    # Питание
+    cal   = _fmt(nutrition.get("calories")  if nutrition else None)
+    prot  = _fmt(nutrition.get("protein_g") if nutrition else None)
+    fat   = _fmt(nutrition.get("fat_g")     if nutrition else None)
+    carb  = _fmt(nutrition.get("carbs_g")   if nutrition else None)
+    water = _fmt(nutrition.get("water_ml")  if nutrition else None)
+
+    if nutrition:
+        lines += [
+            "🍽 *Питание:*",
+            f"Калории:  `{_bar(cal, goal_cal)}`  {cal} / {goal_cal} ккал",
+            f"Белок:    `{_bar(prot, goal_prot)}`  {prot} / {goal_prot} г",
+            f"Жиры:     `{_bar(fat,  goal_fat)}`  {fat} / {goal_fat} г",
+            f"Углеводы: `{_bar(carb, goal_carb)}`  {carb} / {goal_carb} г",
+            f"Вода:     `{_bar(water, goal_water)}`  {water // 1000:.1f} / {goal_water // 1000:.0f} л" if water else f"Вода:     `{'░' * 10}`  — / {goal_water // 1000:.0f} л",
+        ]
+    else:
+        lines.append("🍽 *Питание:* _данных за сегодня нет_\nНапиши что ел — записать в один тап:")
+
+    # Тренировка
+    lines.append("")
+    if workout and workout.get("completed"):
+        dur  = workout.get("duration_min", "?")
+        rpe  = workout.get("intensity", "?")
+        wtype = workout.get("type") or "тренировка"
+        lines.append(f"💪 *Тренировка:* ✅ {wtype} · {dur} мин · RPE {rpe}/10")
+    else:
+        # Смотрим план на сегодня
+        plan = get_active_plan(user["id"])
+        today_workout_planned = None
+        if plan:
+            try:
+                import json as _j
+                for day in _j.loads(plan["plan_json"]):
+                    if day.get("date") == today_str:
+                        today_workout_planned = day
+                        break
+            except Exception:
+                pass
+        if today_workout_planned and today_workout_planned.get("type") not in ("rest", "recovery", None):
+            label = today_workout_planned.get("label") or today_workout_planned.get("type")
+            lines.append(f"💪 *Тренировка:* ⬜ Запланирована — _{label}_")
+        elif today_workout_planned and today_workout_planned.get("type") in ("rest", "recovery"):
+            lines.append("💤 *Сегодня:* день отдыха по плану")
+        else:
+            lines.append("💪 *Тренировка:* ⬜ Не записана")
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=kb_today_quick(),
     )

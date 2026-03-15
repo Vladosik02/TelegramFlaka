@@ -78,6 +78,8 @@ def patched_db(db_conn):
         "db.queries.fitness_metrics.get_connection",
         "db.queries.training_plan.get_connection",
         "db.queries.exercises.get_connection",
+        "db.queries.memory.get_connection",
+        "db.queries.nutrition.get_connection",
         "scheduler.nudges.get_connection",
     ]
     active_patches = []

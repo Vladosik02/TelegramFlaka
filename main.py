@@ -23,6 +23,7 @@ from bot.commands import (
     cmd_export, cmd_profile, cmd_test, cmd_plan, cmd_admin, cmd_setup, cmd_meal,
     cmd_achievements, cmd_history,           # Фаза 10.4 / 10.7
     cmd_menu,                                # Фаза 11 — главное меню
+    cmd_today,                               # Фаза 15.3 — дашборд дня
 )
 from bot.handlers import handle_message, handle_callback, handle_voice, handle_photo  # Фаза 10.3
 from scheduler.jobs import setup_scheduler
@@ -64,6 +65,7 @@ def main() -> None:
     app.add_handler(CommandHandler("achievements", cmd_achievements))  # Фаза 10.4
     app.add_handler(CommandHandler("history",      cmd_history))       # Фаза 10.7
     app.add_handler(CommandHandler("menu",         cmd_menu))          # Фаза 11
+    app.add_handler(CommandHandler("today",        cmd_today))         # Фаза 15.3
 
     # ── 4. Текстовые сообщения ────────────────────────────────────────────────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

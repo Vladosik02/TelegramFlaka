@@ -9,6 +9,12 @@ TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")   # опционально — для Whisper
 
+# ─── Валидация обязательных переменных при старте (Фаза 14.4) ─────────────────
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_TOKEN не задан в .env — бот не может запуститься")
+if not ANTHROPIC_API_KEY:
+    raise ValueError("❌ ANTHROPIC_API_KEY не задан в .env — AI-функции недоступны")
+
 # ─── Администратор (Фаза 8.5) ─────────────────────────────────────────────────
 # Установи ADMIN_USER_ID в .env — Telegram user_id владельца бота
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 0))
@@ -67,6 +73,21 @@ SOFT_START_DAYS     = 7   # мягкий старт после паузы > N д
 # ─── Планирование тренировок (Фаза 8.3) ───────────────────────────────────────
 TRAINING_PLAN_ARCHIVE_TIME  = "19:00"  # воскресенье — архивация прошлой недели
 TRAINING_PLAN_GENERATE_TIME = "20:00"  # воскресенье — генерация плана на след. неделю
+
+# ─── Напоминания перед тренировкой (Фаза 13.5) ────────────────────────────────
+# Два окна: утреннее и вечернее. Каждое отправляется только нужным пользователям.
+PRE_WORKOUT_MORNING_TIME = "08:30"  # для morning/flexible тренеров
+PRE_WORKOUT_EVENING_TIME = "19:30"  # для evening тренеров
+
+# ─── Quick Meal Presets (Фаза 15.4) ───────────────────────────────────────────
+# Пресеты частых приёмов пищи: callback_id → {calories, protein_g, fat_g, carbs_g, label}
+QUICK_MEAL_PRESETS: dict = {
+    "grechka":  {"label": "Гречка + курица",  "calories": 550, "protein_g": 45, "fat_g": 12, "carbs_g": 65},
+    "ovsyanka": {"label": "Овсянка",           "calories": 350, "protein_g": 12, "fat_g":  8, "carbs_g": 55},
+    "tvorog":   {"label": "Творог 5%",         "calories": 200, "protein_g": 28, "fat_g":  5, "carbs_g":  8},
+    "eggs":     {"label": "Яйца ×3",           "calories": 250, "protein_g": 21, "fat_g": 18, "carbs_g":  2},
+    "protein":  {"label": "Протеин (шейк)",    "calories": 150, "protein_g": 25, "fat_g":  3, "carbs_g":  5},
+}
 
 # ─── Проактивные нудж-сообщения (Фаза 8.4) ────────────────────────────────────
 NUDGE_CHECK_TIME         = "08:00"  # ежедневная проверка нудж-условий (до утреннего чек-ина)

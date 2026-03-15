@@ -310,13 +310,59 @@ async def update_l4_for_user(uid: int, telegram_id: int) -> None:
         logger.error(f"[L4] Failed to update intelligence for uid={uid}: {e}")
 
 
-async def broadcast_l4_intelligence() -> None:
-    """Еженедельное обновление L4 Intelligence для всех активных пользователей."""
+async def cleanup_old_checkins() -> None:
+    """
+    Удаляет записи из таблицы checkins старше 90 дней.
+    Запускается еженедельно (воскресенье 22:00) — Фаза 14.7.
+    """
+    from db.connection import get_connection
+    cutoff = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+    try:
+        conn = get_connection()
+        result = conn.execute(
+            "DELETE FROM checkins WHERE date < ?", (cutoff,)
+        )
+        conn.commit()
+        deleted = result.rowcount
+        logger.info(f"[CLEANUP] Deleted {deleted} old checkin records (before {cutoff})")
+    except Exception as e:
+        logger.error(f"[CLEANUP] checkins cleanup failed: {e}")
+
+
+async def broadcast_l4_intelligence(bot=None) -> None:
+    """
+    Еженедельное обновление L4 Intelligence для всех активных пользователей.
+    Фаза 16.3: если передан bot — отправляет weekly_digest пользователю в чат.
+    """
+    from db.queries.memory import get_l4_intelligence
+
     users = _get_all_active_users()
     logger.info(f"[L4] Starting intelligence update for {len(users)} users")
     for user in users:
         try:
             await update_l4_for_user(user["id"], user["telegram_id"])
+
+            # Фаза 16.3 — отправка дайджеста в чат после генерации
+            if bot:
+                try:
+                    l4 = get_l4_intelligence(user["id"])
+                    digest = l4.get("weekly_digest") if l4 else None
+                    trend  = l4.get("trend_summary") if l4 else None
+                    if digest:
+                        lines = ["📊 *Недельный дайджест от Алекса*\n"]
+                        lines.append(digest)
+                        if trend:
+                            lines.append(f"\n📈 _{trend}_")
+                        lines.append("\n_Хорошей недели! 💪_")
+                        await bot.send_message(
+                            chat_id=user["telegram_id"],
+                            text="\n".join(lines),
+                            parse_mode="Markdown",
+                        )
+                        logger.info(f"[L4] Weekly digest sent to {user['telegram_id']}")
+                except Exception as send_err:
+                    logger.warning(f"[L4] Digest send failed for {user['telegram_id']}: {send_err}")
+
         except Exception as e:
             logger.error(f"[L4] Broadcast failed for {user['telegram_id']}: {e}")
     logger.info("[L4] Intelligence broadcast complete")
@@ -1095,6 +1141,171 @@ async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None
         logger.error(f"[PLAN] Failed to send plan to {telegram_id}: {e}")
 
 
+# ─── Pre-workout Reminder (Фаза 13.5) ─────────────────────────────────────────
+
+async def send_pre_workout_reminder(bot: Bot, telegram_id: int) -> None:
+    """
+    Напоминание перед тренировкой: показывает упражнения на сегодня из активного плана.
+    Отправляется только если:
+    1. У пользователя есть активный план с тренировкой на сегодня
+    2. Тренировка ещё не отмечена как завершённая
+    """
+    import json as _json
+    from db.queries.training_plan import get_active_plan
+
+    user = get_user(telegram_id)
+    if not user or not user["active"]:
+        return
+    if _should_silence(user):
+        return
+
+    plan = get_active_plan(user["id"])
+    if not plan:
+        return
+
+    try:
+        days_list = _json.loads(plan["plan_json"])
+    except Exception:
+        return
+
+    today_str = datetime.date.today().isoformat()
+    today_day = None
+    for day in days_list:
+        if day.get("date") == today_str:
+            today_day = day
+            break
+
+    if not today_day:
+        return
+
+    # Только тренировочные дни (не rest/recovery)
+    dtype = today_day.get("type", "rest")
+    if dtype in ("rest", "recovery"):
+        return
+
+    # Не отправляем если уже выполнена
+    if today_day.get("completed"):
+        return
+
+    label = today_day.get("label", dtype)
+    exercises = today_day.get("exercises") or []
+
+    type_icons = {
+        "strength": "💪", "cardio": "🏃", "hiit": "⚡",
+        "mobility": "🧘",
+    }
+    icon = type_icons.get(dtype, "🏋️")
+
+    lines = [f"⏰ *Сегодня тренировка!*\n{icon} *{label}*\n"]
+
+    if exercises:
+        for ex in exercises[:5]:
+            name = ex.get("name", "")
+            sets = ex.get("sets")
+            reps = ex.get("reps")
+            weight = ex.get("weight_kg_target")
+            note = ex.get("note", "")
+            parts = [f"• {name}"]
+            if sets and reps:
+                parts.append(f"{sets}×{reps}")
+            if weight:
+                parts.append(f"@ {weight} кг")
+            if note:
+                parts.append(f"_{note}_")
+            lines.append(" ".join(parts))
+        if len(exercises) > 5:
+            lines.append(f"• … ещё {len(exercises) - 5} упражнений")
+
+    ai_note = today_day.get("ai_note", "")
+    if ai_note:
+        lines.append(f"\n💬 _{ai_note}_")
+
+    # Подсказки прогрессии (Фаза 15.2)
+    try:
+        from db.queries.exercises import get_exercise_last_result
+        overload_lines = []
+        for ex in exercises[:3]:
+            name = ex.get("name", "")
+            if not name:
+                continue
+            target_w = ex.get("weight_kg_target")
+            last = get_exercise_last_result(user["id"], name)
+            if not last:
+                continue
+            lw = last.get("weight_kg")
+            lr = last.get("reps")
+            ls = last.get("sets")
+            last_str_parts = []
+            if ls and lr:
+                last_str_parts.append(f"{ls}×{lr}")
+            if lw:
+                last_str_parts.append(f"@ {lw} кг")
+            if not last_str_parts:
+                continue
+            hint = ""
+            if lw and target_w and lw >= float(target_w):
+                hint = f" → {round(lw + 2.5, 1)} кг 💪"
+            elif lw and target_w:
+                hint = f" → цель {target_w} кг"
+            elif lr:
+                hint = f" → +1 повтор"
+            if hint:
+                overload_lines.append(f"  _{name}: {' '.join(last_str_parts)}{hint}_")
+        if overload_lines:
+            lines.append("\n📈 *Прогрессия:*\n" + "\n".join(overload_lines))
+    except Exception as oe:
+        logger.debug(f"[PRE_WORKOUT] overload hints failed: {oe}")
+
+    lines.append("\nНапиши мне когда закончишь 💪")
+    text = "\n".join(lines)
+
+    try:
+        from bot.keyboards import kb_workout_done as kb_wf_done
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=kb_wf_done(),
+        )
+        logger.info(f"[PRE_WORKOUT] Reminder sent to {telegram_id} for {label}")
+    except Exception as e:
+        logger.error(f"[PRE_WORKOUT] Failed for {telegram_id}: {e}")
+
+
+async def broadcast_pre_workout_morning(bot: Bot) -> None:
+    """Утреннее напоминание: только morning + flexible тренеры."""
+    from db.queries.memory import get_l3_brief
+    users = _get_all_active_users()
+    logger.info(f"[PRE_WORKOUT] Morning broadcast for {len(users)} users")
+    for user in users:
+        if _should_silence(user):
+            continue
+        try:
+            l3 = get_l3_brief(user["id"]) or {}
+            pref = l3.get("preferred_time", "flexible")
+            if pref in ("morning", "flexible"):
+                await send_pre_workout_reminder(bot, user["telegram_id"])
+        except Exception as e:
+            logger.error(f"[PRE_WORKOUT] Morning failed for {user['telegram_id']}: {e}")
+
+
+async def broadcast_pre_workout_evening(bot: Bot) -> None:
+    """Вечернее напоминание: только evening тренеры."""
+    from db.queries.memory import get_l3_brief
+    users = _get_all_active_users()
+    logger.info(f"[PRE_WORKOUT] Evening broadcast for {len(users)} users")
+    for user in users:
+        if _should_silence(user):
+            continue
+        try:
+            l3 = get_l3_brief(user["id"]) or {}
+            pref = l3.get("preferred_time", "flexible")
+            if pref == "evening":
+                await send_pre_workout_reminder(bot, user["telegram_id"])
+        except Exception as e:
+            logger.error(f"[PRE_WORKOUT] Evening failed for {user['telegram_id']}: {e}")
+
+
 async def broadcast_plan_archive(bot) -> None:
     """
     Воскресенье 19:00 — архивация активных планов всех пользователей.
@@ -1125,3 +1336,57 @@ async def broadcast_plan_generate(bot) -> None:
         except Exception as e:
             logger.error(f"[PLAN] Generate failed for {user['telegram_id']}: {e}")
     logger.info("[PLAN] Generate broadcast complete")
+
+
+# ─── Streak Protection (Фаза 16.4) ────────────────────────────────────────────
+
+async def broadcast_streak_protection(bot: Bot) -> None:
+    """
+    Ежедневно в 20:00: проверяет streak каждого активного пользователя.
+    Если стрик >= 3 дней И сегодня тренировка не записана — отправляет предупреждение.
+    Цель: не дать сломать стрик из-за забывчивости.
+    """
+    users = _get_all_active_users()
+    today = datetime.date.today().isoformat()
+    sent = 0
+
+    for user in users:
+        if _should_silence(user):
+            continue
+        try:
+            uid = user["id"]
+            streak = get_streak(uid)
+
+            # Меньше 3 дней стрика — не беспокоим
+            if streak < 3:
+                continue
+
+            # Проверяем: есть ли завершённая тренировка сегодня
+            from db.connection import get_connection as _gc
+            conn = _gc()
+            done_today = conn.execute(
+                "SELECT COUNT(*) as cnt FROM workouts WHERE user_id = ? AND date = ? AND completed = 1",
+                (uid, today),
+            ).fetchone()
+
+            if done_today and done_today["cnt"] > 0:
+                continue   # тренировка уже есть, всё хорошо
+
+            msg = (
+                f"🔥 *Стрик {streak} дней под угрозой!*\n\n"
+                f"Ты тренировался {streak} дней подряд — не ломай цепочку сегодня!\n"
+                f"Даже короткая тренировка засчитается. 💪\n\n"
+                f"_Осталось несколько часов — успеешь!_"
+            )
+            await bot.send_message(
+                chat_id=user["telegram_id"],
+                text=msg,
+                parse_mode="Markdown",
+            )
+            sent += 1
+            logger.info(f"[STREAK] Protection alert sent to {user['telegram_id']} (streak={streak})")
+
+        except Exception as e:
+            logger.error(f"[STREAK] Failed for {user['telegram_id']}: {e}")
+
+    logger.info(f"[STREAK] Protection broadcast complete, {sent} alerts sent")

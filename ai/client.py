@@ -353,9 +353,41 @@ async def generate_agent_response(
             await sent_msg.edit_text("✅ Готово.")
             final_text = "✅ Готово."
 
+        # Детектируем случай «сообщение о еде/тренировке, но tools не вызваны» (Фаза 14)
+        _NUTRITION_KEYWORDS = ("съел", "поел", "обед", "завтрак", "ужин", "перекус",
+                               "выпил", "ккал", "калори", "питание", "кбжу")
+        _WORKOUT_KEYWORDS = ("потренировался", "тренировка", "занимался", "тренил",
+                             "отжимания", "приседания", "подтягивания")
+        _METRICS_KEYWORDS = ("поспал", "сон", "энергия", "вешу", "вес ")
+        all_tools_called_in_session = any(
+            (b.type == "tool_use")
+            for msg in messages
+            if isinstance(msg, dict) and msg.get("role") == "assistant"
+            for b in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+        )
+        if not all_tools_called_in_session and final_text:
+            msg_lower = user_message.lower()
+            expected: list[str] = []
+            if any(kw in msg_lower for kw in _NUTRITION_KEYWORDS):
+                expected.append("save_nutrition")
+            if any(kw in msg_lower for kw in _WORKOUT_KEYWORDS):
+                expected.append("save_workout")
+            if any(kw in msg_lower for kw in _METRICS_KEYWORDS):
+                expected.append("save_metrics")
+            if expected:
+                try:
+                    from bot.debug import notify_no_tools_called
+                    await notify_no_tools_called(bot, chat_id, user_message, expected)
+                except Exception:
+                    pass
+
     except anthropic.APIStatusError as e:
         logger.error(f"[AGENT] API error {e.status_code}: {e.message}")
-        # Graceful degradation — пробуем без инструментов
+        try:
+            from bot.debug import notify_api_error
+            await notify_api_error(bot, chat_id, e.status_code, e.message, "AGENT")
+        except Exception:
+            pass
         logger.info(f"[AGENT] Falling back to streaming for user={tg_id}")
         try:
             await sent_msg.delete()
@@ -365,12 +397,23 @@ async def generate_agent_response(
 
     except anthropic.APIConnectionError:
         logger.error(f"[AGENT] Connection error for user={tg_id}")
+        try:
+            from bot.debug import notify_error
+            await notify_error(bot, chat_id, "Нет связи с Anthropic API",
+                               "Проверь интернет или статус api.anthropic.com", "AGENT", "error")
+        except Exception:
+            pass
         await sent_msg.edit_text("⚠️ Нет связи с AI. Проверь интернет.")
         return ""
 
     except Exception as e:
         logger.error(f"[AGENT] Unexpected error for user={tg_id}: {e}")
-        # Graceful degradation
+        try:
+            from bot.debug import notify_error
+            await notify_error(bot, chat_id, "Необработанное исключение в агенте",
+                               str(e)[:300], "AGENT", "error")
+        except Exception:
+            pass
         logger.info(f"[AGENT] Falling back to streaming for user={tg_id}")
         try:
             await sent_msg.delete()

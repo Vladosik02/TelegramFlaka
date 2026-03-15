@@ -19,15 +19,18 @@ def kb_main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 План",          callback_data="menu:plan"),
         ],
         [
+            InlineKeyboardButton("🗓 Календарь",     callback_data="menu:calendar"),
+            InlineKeyboardButton("📅 Хроника",       callback_data="menu:history"),
+        ],
+        [
             InlineKeyboardButton("🏆 Ачивки",        callback_data="menu:achievements"),
             InlineKeyboardButton("👤 Профиль",       callback_data="menu:profile"),
         ],
         [
             InlineKeyboardButton("🏋️ Фитнес-тест",  callback_data="menu:test"),
-            InlineKeyboardButton("📅 Хроника",       callback_data="menu:history"),
+            InlineKeyboardButton("🔧 Настройки",     callback_data="menu:setup"),
         ],
         [
-            InlineKeyboardButton("🔧 Настройки",     callback_data="menu:setup"),
             InlineKeyboardButton("📤 Экспорт CSV",   callback_data="menu:export"),
         ],
     ])
@@ -39,6 +42,10 @@ def kb_stats_quick() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("📅 7 дней",        callback_data="menu:history_7"),
             InlineKeyboardButton("📅 30 дней",       callback_data="menu:history_30"),
+        ],
+        [
+            InlineKeyboardButton("⚖️ График веса",   callback_data="chart:weight"),
+            InlineKeyboardButton("💪 Рекорды",       callback_data="chart:strength"),
         ],
         [
             InlineKeyboardButton("🏋️ Фитнес-тест",  callback_data="menu:test"),
@@ -127,6 +134,55 @@ def kb_back_to_menu() -> InlineKeyboardMarkup:
     """Простая кнопка возврата в главное меню."""
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("🏠 Главное меню", callback_data="menu:home"),
+    ]])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GUIDED WORKOUT FLOW — Фаза 13.2
+# ═══════════════════════════════════════════════════════════════════════════
+
+def kb_workout_duration() -> InlineKeyboardMarkup:
+    """Выбор длительности тренировки (шаг 1 guided flow)."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("20 мин", callback_data="wf:dur:20"),
+            InlineKeyboardButton("30 мин", callback_data="wf:dur:30"),
+            InlineKeyboardButton("45 мин", callback_data="wf:dur:45"),
+            InlineKeyboardButton("60 мин", callback_data="wf:dur:60"),
+        ],
+        [
+            InlineKeyboardButton("75 мин", callback_data="wf:dur:75"),
+            InlineKeyboardButton("90 мин", callback_data="wf:dur:90"),
+            InlineKeyboardButton("⌨️ Другое", callback_data="wf:dur:custom"),
+        ],
+    ])
+
+
+def kb_workout_rpe() -> InlineKeyboardMarkup:
+    """RPE 1-10 — оценка интенсивности (шаг 2 guided flow)."""
+    row1 = [InlineKeyboardButton(str(i), callback_data=f"wf:rpe:{i}") for i in range(1, 6)]
+    row2 = [InlineKeyboardButton(str(i), callback_data=f"wf:rpe:{i}") for i in range(6, 11)]
+    return InlineKeyboardMarkup([row1, row2])
+
+
+def kb_workout_feeling() -> InlineKeyboardMarkup:
+    """Ощущения после тренировки (шаг 3 guided flow)."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💪 Отлично",   callback_data="wf:feel:great"),
+            InlineKeyboardButton("😐 Нормально", callback_data="wf:feel:ok"),
+        ],
+        [
+            InlineKeyboardButton("😓 Тяжело",  callback_data="wf:feel:hard"),
+            InlineKeyboardButton("🤕 Боль",    callback_data="wf:feel:pain"),
+        ],
+    ])
+
+
+def kb_workout_comment() -> InlineKeyboardMarkup:
+    """Комментарий — пропустить или ввести текстом (шаг 4 guided flow)."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Нет, всё ок", callback_data="wf:comment:skip"),
     ]])
 
 
@@ -236,6 +292,39 @@ def kb_training_days() -> InlineKeyboardMarkup:
 # ═══════════════════════════════════════════════════════════════════════════
 # АДМИН-ПАНЕЛЬ
 # ═══════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
+# /TODAY DASHBOARD — Фаза 15.3 / QUICK MEALS — Фаза 15.4
+# ═══════════════════════════════════════════════════════════════════════════
+
+def kb_today_quick() -> InlineKeyboardMarkup:
+    """Кнопки под /today: быстрый приём пищи и меню."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🍽 Быстрый приём", callback_data="meal:quick"),
+            InlineKeyboardButton("💪 Записать тренировку", callback_data="workout_done"),
+        ],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:home")],
+    ])
+
+
+def kb_quick_meals() -> InlineKeyboardMarkup:
+    """Пресеты частых приёмов пищи — 1 тап = записать."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🍚 Гречка + курица",  callback_data="meal:grechka"),
+            InlineKeyboardButton("🥣 Овсянка",          callback_data="meal:ovsyanka"),
+        ],
+        [
+            InlineKeyboardButton("🥛 Творог",           callback_data="meal:tvorog"),
+            InlineKeyboardButton("🥚 Яйца ×3",         callback_data="meal:eggs"),
+        ],
+        [
+            InlineKeyboardButton("🥤 Протеин (шейк)",   callback_data="meal:protein"),
+        ],
+        [InlineKeyboardButton("« Назад",               callback_data="menu:home")],
+    ])
+
 
 def kb_admin_main() -> InlineKeyboardMarkup:
     """Главное меню администратора."""

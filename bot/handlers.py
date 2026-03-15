@@ -18,18 +18,17 @@ from db.queries.fitness_metrics import (
 from db.connection import get_connection
 from ai.context_builder import build_layered_context, maybe_compress_context
 from ai.client import generate_chat_response_streaming, generate_agent_response
-from ai.response_parser import (
-    detect_health_alert, is_workout_report, is_metrics_report, is_nutrition_report,
-    parse_workout_from_message, parse_metrics_from_message, parse_nutrition_from_message
-)
+from ai.response_parser import detect_health_alert
 from db.writer import (
     save_user_message, save_ai_response,
-    save_workout_from_parsed, save_metrics_from_parsed, save_nutrition_from_parsed
+    save_metrics_from_parsed,
 )
 from bot.keyboards import (
     kb_fitness_level, kb_goal, kb_workout_time, kb_reminder,
     kb_health_check, kb_training_location, kb_training_days,
     kb_main_menu, kb_back_to_menu,
+    kb_workout_duration, kb_workout_rpe, kb_workout_feeling, kb_workout_comment,
+    kb_workout_done,
 )
 from config import (
     HEALTH_KEYWORDS, OPENAI_API_KEY,
@@ -481,6 +480,94 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         save_user_message(tg.id, text)
         return
 
+    # ── Guided Workout Flow: обработка custom duration или текстового комментария ─
+    wf = ctx.user_data.get("workout_flow", {})
+    if wf.get("awaiting_custom_duration"):
+        try:
+            dur = int(text.strip())
+            if not (5 <= dur <= 300):
+                raise ValueError
+            wf["duration_min"] = dur
+            wf.pop("awaiting_custom_duration", None)
+            ctx.user_data["workout_flow"] = wf
+            await update.message.reply_text(
+                f"⏱ {dur} мин — записал.\n\n"
+                "Оцени интенсивность (RPE 1-10):\n"
+                "_1 = прогулка, 5 = обычная, 10 = максимум_",
+                parse_mode="Markdown",
+                reply_markup=kb_workout_rpe()
+            )
+        except (ValueError, TypeError):
+            await update.message.reply_text(
+                "Напиши число от 5 до 300 (минуты тренировки). Например: 45"
+            )
+        return
+
+    # Если в flow на шаге комментария — ждём текстовый ввод
+    if wf and wf.get("feeling") and "notes" not in wf:
+        wf["notes"] = text
+        ctx.user_data["workout_flow"] = wf
+        # Используем заглушку объекта для вызова save
+        class _FakeQuery:
+            async def edit_message_text(self, *a, **kw): pass
+        try:
+            from db.queries.workouts import log_workout
+            from db.queries.user import get_user as _get_user
+            import datetime as _dt
+            user2 = _get_user(tg.id)
+            label = wf.get("label", "тренировка")
+            notes_parts = []
+            if wf.get("feeling"):
+                notes_parts.append(f"Ощущения: {wf['feeling']}")
+            notes_parts.append(text)
+            log_workout(
+                user_id=user2["id"],
+                date=_dt.date.today().isoformat(),
+                mode=None,
+                workout_type=wf.get("workout_type", "strength"),
+                duration_min=wf.get("duration_min"),
+                intensity=wf.get("intensity"),
+                exercises=None,
+                notes="; ".join(notes_parts),
+                completed=True,
+            )
+            xp = 0
+            try:
+                from db.queries.gamification import add_xp
+                xp = add_xp(user2["id"], 100, "workout", wf.get("workout_type"))
+            except Exception as xe:
+                logger.warning(f"[WF] XP award failed: {xe}")
+            try:
+                from db.queries.episodic import save_episode
+                save_episode(
+                    user_id=user2["id"],
+                    episode_type="training",
+                    summary=f"Тренировка '{label}' {wf.get('duration_min','?')} мин, ощущения: {wf.get('feeling','?')}. Комментарий: {text[:100]}",
+                    tags=["training", wf.get("workout_type", "strength")],
+                    importance=5,
+                    ttl_days=30,
+                )
+            except Exception as ee:
+                logger.warning(f"[WF] save_episode failed: {ee}")
+            # Синхронизируем план (Фаза 15.1)
+            try:
+                from db.queries.training_plan import mark_plan_day_completed
+                mark_plan_day_completed(user2["id"], _dt.date.today().isoformat())
+            except Exception as pe:
+                logger.warning(f"[WF] mark_plan_day_completed failed: {pe}")
+            await update.message.reply_text(
+                f"✅ Тренировка записана! +{xp} XP 🎉\n\n"
+                f"📝 *{label}* · ощущения: {wf.get('feeling', '—')}\n"
+                f"Комментарий: {text}\n\nХорошая работа! 💪",
+                parse_mode="Markdown",
+                reply_markup=kb_back_to_menu()
+            )
+        except Exception as e:
+            logger.error(f"[WF] save from text failed for {tg.id}: {e}")
+            await update.message.reply_text("❌ Не удалось сохранить. Попробуй ещё раз.")
+        ctx.user_data.pop("workout_flow", None)
+        return
+
     # ── Обработка ввода (парсинг + AI-ответ) ─────────────────────────────────
     await _process_user_input(tg.id, text, update)
 
@@ -586,11 +673,107 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # ── Утренний чек-ин: Готов / Дай время — Фаза 13.1 ──────────────────────
+    if data == "morning_ready":
+        user = get_user(tg.id)
+        if not user:
+            await query.edit_message_text("Напиши /start чтобы начать.")
+            return
+        from db.queries.training_plan import get_active_plan
+        import json as _json
+        plan = get_active_plan(user["id"])
+        today_str = datetime.date.today().isoformat()
+        today_workout = None
+        if plan:
+            try:
+                days = _json.loads(plan["plan_json"])
+                for day in days:
+                    if day.get("date") == today_str:
+                        today_workout = day
+                        break
+            except Exception as e:
+                logger.warning(f"[MORNING_READY] Plan parse error for {tg.id}: {e}")
+
+        if today_workout and today_workout.get("type") not in ("rest", "recovery", None):
+            exercises = today_workout.get("exercises") or []
+            ex_lines = []
+            for ex in exercises:
+                parts = [f"• {ex.get('name', '?')}"]
+                if ex.get("sets") and ex.get("reps"):
+                    parts.append(f"{ex['sets']}×{ex['reps']}")
+                if ex.get("weight_kg_target"):
+                    parts.append(f"@ {ex['weight_kg_target']} кг")
+                if ex.get("note"):
+                    parts.append(f"_{ex['note']}_")
+                ex_lines.append(" ".join(parts))
+            ex_text = "\n".join(ex_lines) if ex_lines else "_Без детализации_"
+            label = today_workout.get("label") or today_workout.get("type") or "тренировка"
+            note = today_workout.get("ai_note", "")
+            note_text = f"\n\n💬 _{note}_" if note else ""
+            # Прогрессия (Фаза 15.2)
+            overload_text = _build_overload_hints(user["id"], exercises)
+            text = (
+                f"💪 *Сегодня: {label}*\n\n"
+                f"{ex_text}"
+                f"{overload_text}"
+                f"{note_text}\n\n"
+                "Когда закончишь — нажми «Сделал» 👇"
+            )
+            await query.edit_message_text(
+                text, parse_mode="Markdown", reply_markup=kb_workout_done()
+            )
+        elif today_workout and today_workout.get("type") in ("rest", "recovery"):
+            await query.edit_message_text(
+                "🌿 Сегодня *день отдыха* по плану.\n"
+                "Лёгкая прогулка или растяжка — идеально. Восстанавливайся! 💤",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.edit_message_text(
+                "📋 Плана на сегодня пока нет.\n"
+                "Новый план генерируется каждое *воскресенье в 20:00*.\n"
+                "Хочешь составить прямо сейчас — напиши мне: _«составь план»_",
+                parse_mode="Markdown",
+                reply_markup=kb_back_to_menu()
+            )
+        return
+
+    if data == "morning_later":
+        await query.edit_message_text(
+            "😴 Хорошо, отдохни. Напомню позже.\n"
+            "Когда будешь готов — /plan покажет сегодняшнюю тренировку."
+        )
+        return
+
     # ── Тренировка ────────────────────────────────────────────────────────────
     if data == "workout_done":
+        user = get_user(tg.id)
+        # Берём тренировку дня из активного плана
+        from db.queries.training_plan import get_active_plan
+        import json as _json
+        plan = get_active_plan(user["id"]) if user else None
+        today_str = datetime.date.today().isoformat()
+        today_workout = None
+        if plan:
+            try:
+                days_list = _json.loads(plan["plan_json"])
+                for d in days_list:
+                    if d.get("date") == today_str:
+                        today_workout = d
+                        break
+            except Exception as e:
+                logger.warning(f"[WF] Plan parse error for {tg.id}: {e}")
+        # Инициализируем Guided Flow
+        ctx.user_data["workout_flow"] = {
+            "workout_type": (today_workout.get("type") or "strength") if today_workout else "strength",
+            "label": (today_workout.get("label") or today_workout.get("type") or "тренировка") if today_workout else "тренировка",
+            "exercises": (today_workout.get("exercises") or []) if today_workout else [],
+        }
+        label = ctx.user_data["workout_flow"]["label"]
         await query.edit_message_text(
-            "💪 Отлично! Расскажи как прошло — что делал, сколько времени, "
-            "как ощущения?"
+            f"💪 *{label}*\n\nСколько времени заняла тренировка?",
+            parse_mode="Markdown",
+            reply_markup=kb_workout_duration()
         )
         return
 
@@ -654,6 +837,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # ── Guided Workout Flow (wf:*) — Фаза 13.2 ───────────────────────────────
+    if data.startswith("wf:"):
+        await _handle_workout_flow(query, ctx, tg, data)
+        return
+
+    # ── Quick Meal Presets (meal:*) — Фаза 15.4 ──────────────────────────────
+    if data.startswith("meal:"):
+        await _handle_meal_callback(query, ctx, tg, data[5:])
+        return
+
+    # ── Графики (chart:*) — Фаза 16.2 ────────────────────────────────────────
+    if data.startswith("chart:"):
+        await _handle_chart_callback(query, ctx, tg, data[6:])
+        return
+
     # ── Главное меню (menu:*) — Фаза 11 ──────────────────────────────────────
     if data.startswith("menu:"):
         await _handle_menu_callback(query, ctx, tg, data[5:])
@@ -681,6 +879,221 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     # ── Прочие ───────────────────────────────────────────────────────────────
     await query.edit_message_text("Принято.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PROGRESSIVE OVERLOAD HINTS — Фаза 15.2
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _build_overload_hints(user_id: int, exercises: list) -> str:
+    """
+    Для каждого упражнения из плана смотрит последний результат.
+    Возвращает строку-подсказку для прогрессии (или пустую строку).
+    Показывает макс. 3 упражнения чтобы не засорять сообщение.
+    """
+    from db.queries.exercises import get_exercise_last_result
+    lines = []
+    checked = 0
+    for ex in exercises:
+        name = ex.get("name", "")
+        if not name or checked >= 3:
+            break
+        target_weight = ex.get("weight_kg_target")
+        last = get_exercise_last_result(user_id, name)
+        if not last:
+            continue
+        checked += 1
+        last_sets = last.get("sets")
+        last_reps = last.get("reps")
+        last_weight = last.get("weight_kg")
+        # Форматируем прошлый результат
+        last_str = name
+        parts = []
+        if last_sets and last_reps:
+            parts.append(f"{last_sets}×{last_reps}")
+        if last_weight:
+            parts.append(f"@ {last_weight} кг")
+        if parts:
+            last_str = " ".join(parts)
+        # Подсказка по прогрессии
+        hint = ""
+        if last_weight and target_weight and last_weight >= float(target_weight):
+            next_w = round(last_weight + 2.5, 1)
+            hint = f" → попробуй {next_w} кг 💪"
+        elif last_weight and target_weight and last_weight < float(target_weight):
+            hint = f" → цель {target_weight} кг"
+        elif last_reps:
+            hint = f" → добавь 1 повтор"
+        if hint:
+            lines.append(f"  _{name}: {last_str}{hint}_")
+    if not lines:
+        return ""
+    return "\n📈 *Прогрессия:*\n" + "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GUIDED WORKOUT FLOW — Фаза 13.2
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def _handle_workout_flow(query, ctx, tg, data: str) -> None:
+    """Пошаговая запись тренировки через кнопки."""
+    parts = data.split(":")
+    if len(parts) < 2:
+        return
+    step = parts[1]
+    value = parts[2] if len(parts) > 2 else None
+
+    wf = ctx.user_data.get("workout_flow", {})
+
+    # ── Шаг 1: длительность ───────────────────────────────────────────────
+    if step == "dur":
+        if value == "custom":
+            wf["awaiting_custom_duration"] = True
+            ctx.user_data["workout_flow"] = wf
+            await query.edit_message_text(
+                "⏱ Напиши длительность в минутах (например: 50):"
+            )
+            return
+        wf["duration_min"] = int(value)
+        wf.pop("awaiting_custom_duration", None)
+        ctx.user_data["workout_flow"] = wf
+        await query.edit_message_text(
+            f"⏱ {value} мин — записал.\n\n"
+            "Оцени интенсивность (RPE 1-10):\n"
+            "_1 = прогулка, 5 = обычная, 10 = максимум_",
+            parse_mode="Markdown",
+            reply_markup=kb_workout_rpe()
+        )
+
+    # ── Шаг 2: интенсивность (RPE) ────────────────────────────────────────
+    elif step == "rpe":
+        wf["intensity"] = int(value)
+        ctx.user_data["workout_flow"] = wf
+        await query.edit_message_text(
+            f"💥 RPE {value}/10.\n\nКак ощущения?",
+            reply_markup=kb_workout_feeling()
+        )
+
+    # ── Шаг 3: ощущения ───────────────────────────────────────────────────
+    elif step == "feel":
+        feeling_map = {
+            "great": "отлично 💪",
+            "ok":    "нормально 😐",
+            "hard":  "тяжело 😓",
+            "pain":  "боль/дискомфорт 🤕",
+        }
+        wf["feeling"] = feeling_map.get(value, value)
+        wf["feeling_key"] = value
+        ctx.user_data["workout_flow"] = wf
+        await query.edit_message_text(
+            f"Ощущения: {wf['feeling']}.\n\n"
+            "Хочешь добавить комментарий? Напиши или нажми кнопку:",
+            reply_markup=kb_workout_comment()
+        )
+
+    # ── Шаг 4: комментарий → сохранение ──────────────────────────────────
+    elif step == "comment":
+        wf["notes"] = "" if value == "skip" else value
+        ctx.user_data["workout_flow"] = wf
+        await _save_workout_from_flow(query, ctx, tg, wf)
+        ctx.user_data.pop("workout_flow", None)
+
+
+async def _save_workout_from_flow(query, ctx, tg, wf: dict) -> None:
+    """Сохраняет тренировку из guided flow в БД."""
+    import datetime as _dt
+    from db.queries.user import get_user as _get_user
+    from db.queries.workouts import log_workout
+
+    user = _get_user(tg.id)
+    if not user:
+        await query.edit_message_text("❌ Профиль не найден. Напиши /start")
+        return
+
+    today = _dt.date.today().isoformat()
+    label = wf.get("label", "тренировка")
+    workout_type = wf.get("workout_type", "strength")
+    duration_min = wf.get("duration_min")
+    intensity = wf.get("intensity")
+
+    notes_parts = []
+    if wf.get("feeling"):
+        notes_parts.append(f"Ощущения: {wf['feeling']}")
+    if wf.get("notes"):
+        notes_parts.append(wf["notes"])
+    notes = "; ".join(notes_parts) if notes_parts else None
+
+    try:
+        log_workout(
+            user_id=user["id"],
+            date=today,
+            mode=None,
+            workout_type=workout_type,
+            duration_min=duration_min,
+            intensity=intensity,
+            exercises=None,
+            notes=notes,
+            completed=True,
+        )
+    except Exception as e:
+        logger.error(f"[WF] log_workout failed for {tg.id}: {e}")
+        await query.edit_message_text("❌ Не удалось записать тренировку. Попробуй ещё раз.")
+        return
+
+    # Синхронизируем план — помечаем день как выполненный (Фаза 15.1)
+    try:
+        from db.queries.training_plan import mark_plan_day_completed
+        mark_plan_day_completed(user["id"], today)
+    except Exception as e:
+        logger.warning(f"[WF] mark_plan_day_completed failed for {tg.id}: {e}")
+
+    # XP за тренировку
+    xp_awarded = 0
+    try:
+        from db.queries.gamification import add_xp
+        xp_awarded = add_xp(user["id"], 100, "workout", workout_type)
+    except Exception as e:
+        logger.warning(f"[WF] XP award failed for {tg.id}: {e}")
+
+    # Сохраняем эпизод в память
+    try:
+        from db.queries.episodic import save_episode
+        save_episode(
+            user_id=user["id"],
+            episode_type="training",
+            summary=f"Тренировка '{label}' {duration_min or '?'} мин, RPE {intensity or '?'}/10, ощущения: {wf.get('feeling', '?')}",
+            tags=["training", workout_type],
+            importance=5,
+            ttl_days=30,
+        )
+    except Exception as e:
+        logger.warning(f"[WF] save_episode failed for {tg.id}: {e}")
+
+    # Если боль — запросить подробности
+    if wf.get("feeling_key") == "pain":
+        await query.edit_message_text(
+            f"✅ Тренировка записана! +{xp_awarded} XP\n\n"
+            "⚠️ Ты отметил боль/дискомфорт.\n"
+            "Расскажи подробнее — что и где болит?\n"
+            "_Важно для корректировки плана._",
+            parse_mode="Markdown"
+        )
+        return
+
+    summary = f"📝 *{label}*"
+    if duration_min:
+        summary += f" · {duration_min} мин"
+    if intensity:
+        summary += f" · RPE {intensity}/10"
+
+    await query.edit_message_text(
+        f"✅ Тренировка записана! +{xp_awarded} XP 🎉\n\n"
+        f"{summary}\n"
+        f"Ощущения: {wf.get('feeling', '—')}\n\n"
+        "Хорошая работа! 💪",
+        parse_mode="Markdown",
+        reply_markup=kb_back_to_menu()
+    )
 
 
 async def _handle_menu_callback(
@@ -816,7 +1229,221 @@ async def _handle_menu_callback(
         await handler_map[action](_MockUpdate(), _MockCtx())
         return
 
+    # ── Календарь тренировок (Фаза 13.6) ────────────────────────────────────
+    if action == "calendar":
+        if not user:
+            await query.answer("Нет данных. Напиши /start", show_alert=True)
+            return
+        import json as _cj
+        from db.queries.training_plan import get_active_plan
+        plan = get_active_plan(user["id"])
+        if not plan:
+            await query.edit_message_text(
+                "📅 *Календарь тренировок*\n\n"
+                "На эту неделю план не сгенерирован.\n"
+                "Воскресным вечером Алекс составит расписание 📋",
+                parse_mode="Markdown",
+                reply_markup=kb_back_to_menu(),
+            )
+            return
+        try:
+            days_list = _cj.loads(plan["plan_json"])
+        except Exception:
+            await query.answer("Ошибка чтения плана", show_alert=True)
+            return
+
+        today_str = datetime.date.today().isoformat()
+        type_icons = {
+            "strength": "💪", "cardio": "🏃", "hiit": "⚡",
+            "mobility": "🧘", "rest": "😴", "recovery": "🌿",
+        }
+        workouts_done = plan.get("workouts_completed", 0)
+        workouts_total = plan.get("workouts_planned", 0)
+
+        try:
+            week_d = datetime.date.fromisoformat(plan["week_start"])
+            week_end = week_d + datetime.timedelta(days=6)
+            week_label = f"{week_d.strftime('%d.%m')}–{week_end.strftime('%d.%m')}"
+        except Exception:
+            week_label = plan.get("week_start", "")
+
+        lines = [
+            f"🗓 *Календарь недели* ({week_label})",
+            f"Прогресс: {workouts_done}/{workouts_total} тренировок\n",
+        ]
+        for day in days_list:
+            dtype = day.get("type", "rest")
+            icon = type_icons.get(dtype, "📅")
+            weekday = day.get("weekday", "")
+            label = day.get("label", dtype)
+            date_str = day.get("date", "")
+            completed = day.get("completed", False)
+
+            try:
+                date_fmt = datetime.date.fromisoformat(date_str).strftime("%d.%m")
+            except Exception:
+                date_fmt = date_str
+
+            # Сегодня — выделяем
+            is_today = date_str == today_str
+            if completed:
+                mark = "✅"
+            elif is_today and dtype not in ("rest", "recovery"):
+                mark = "➡️"
+            else:
+                mark = "⬜"
+
+            line = f"{mark} *{weekday}* {date_fmt} — {icon} {label}"
+            if is_today and dtype not in ("rest", "recovery") and not completed:
+                line += " ← сегодня"
+            lines.append(line)
+
+            # Показываем упражнения только для сегодняшнего дня
+            if is_today and dtype not in ("rest", "recovery"):
+                exercises = day.get("exercises") or []
+                for ex in exercises[:4]:
+                    name = ex.get("name", "")
+                    sets = ex.get("sets")
+                    reps = ex.get("reps")
+                    weight = ex.get("weight_kg_target")
+                    parts = [f"  • {name}"]
+                    if sets and reps:
+                        parts.append(f"{sets}×{reps}")
+                    if weight:
+                        parts.append(f"@{weight}кг")
+                    lines.append(" ".join(parts))
+                if len(exercises) > 4:
+                    lines.append(f"  • … ещё {len(exercises) - 4}")
+
+        from bot.keyboards import kb_plan_quick
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=kb_plan_quick(),
+        )
+        return
+
     await query.answer("Неизвестное действие", show_alert=True)
+
+
+async def _handle_meal_callback(query, ctx, tg, action: str) -> None:
+    """
+    Быстрое логирование приёма пищи по пресету (meal:*) — Фаза 15.4.
+    action: preset_id (grechka/ovsyanka/tvorog/eggs/protein) или 'quick' (показать меню).
+    """
+    from config import QUICK_MEAL_PRESETS
+    from bot.keyboards import kb_quick_meals, kb_today_quick
+
+    # meal:quick — показываем меню пресетов
+    if action == "quick":
+        await query.edit_message_text(
+            "🍽 *Быстрый приём пищи*\n\nВыбери что ел — записываю сразу:",
+            parse_mode="Markdown",
+            reply_markup=kb_quick_meals(),
+        )
+        return
+
+    preset = QUICK_MEAL_PRESETS.get(action)
+    if not preset:
+        await query.answer("Неизвестный пресет", show_alert=True)
+        return
+
+    user = get_user(tg.id)
+    if not user:
+        await query.answer("Напиши /start", show_alert=True)
+        return
+
+    try:
+        from db.queries.nutrition import log_nutrition_day, get_today_nutrition
+        import datetime as _dt
+
+        today = _dt.date.today().isoformat()
+        existing = get_today_nutrition(user["id"])
+
+        # Если запись уже есть — добавляем к существующему (накопительный учёт)
+        if existing:
+            new_cal  = (existing.get("calories")  or 0) + preset["calories"]
+            new_prot = (existing.get("protein_g") or 0) + preset["protein_g"]
+            new_fat  = (existing.get("fat_g")     or 0) + preset["fat_g"]
+            new_carb = (existing.get("carbs_g")   or 0) + preset["carbs_g"]
+            # Обновляем meal_notes — добавляем к списку
+            prev_notes = existing.get("meal_notes") or ""
+            new_notes = f"{prev_notes}, {preset['label']}" if prev_notes else preset["label"]
+            log_nutrition_day(
+                user["id"], date=today,
+                calories=new_cal, protein_g=new_prot, fat_g=new_fat, carbs_g=new_carb,
+                meal_notes=new_notes,
+            )
+            await query.edit_message_text(
+                f"✅ *{preset['label']}* добавлен!\n\n"
+                f"Сегодня итого: *{new_cal} ккал* · Б{new_prot}г · Ж{new_fat}г · У{new_carb}г\n\n"
+                "Добавить ещё один приём?",
+                parse_mode="Markdown",
+                reply_markup=kb_quick_meals(),
+            )
+        else:
+            log_nutrition_day(
+                user["id"], date=today,
+                calories=preset["calories"],
+                protein_g=preset["protein_g"],
+                fat_g=preset["fat_g"],
+                carbs_g=preset["carbs_g"],
+                meal_notes=preset["label"],
+            )
+            await query.edit_message_text(
+                f"✅ *{preset['label']}* записан!\n\n"
+                f"*{preset['calories']} ккал* · Б{preset['protein_g']}г · Ж{preset['fat_g']}г · У{preset['carbs_g']}г\n\n"
+                "Добавить ещё один приём?",
+                parse_mode="Markdown",
+                reply_markup=kb_quick_meals(),
+            )
+        logger.info(f"[MEAL] Preset '{action}' logged for {tg.id}")
+    except Exception as e:
+        logger.error(f"[MEAL] Failed to log preset '{action}' for {tg.id}: {e}")
+        await query.answer("Ошибка записи. Попробуй ещё раз.", show_alert=True)
+
+
+async def _handle_chart_callback(query, ctx, tg, chart_type: str) -> None:
+    """
+    Генерирует и отправляет график (chart:*) — Фаза 16.2.
+
+    chart_type: weight | strength | intensity | sleep | fitness | xp
+    """
+    from analytics.charts import build_chart, CHART_REGISTRY
+    from bot.keyboards import kb_stats_quick
+
+    user = get_user(tg.id)
+    if not user:
+        await query.answer("Напиши /start", show_alert=True)
+        return
+
+    entry = CHART_REGISTRY.get(chart_type)
+    label = entry[0] if entry else chart_type
+
+    await query.answer(f"Строю {label}…")
+
+    try:
+        buf = build_chart(chart_type, user["id"])
+    except Exception as e:
+        logger.error(f"[CHART] build_chart({chart_type}) for {tg.id}: {e}")
+        buf = None
+
+    if buf is None:
+        await query.message.reply_text(
+            f"📊 Недостаточно данных для графика «{label}».\n"
+            "Продолжай тренироваться — данные накопятся! 💪",
+            reply_markup=kb_stats_quick(),
+        )
+        return
+
+    caption = f"📊 *{label}*"
+    await query.message.reply_photo(
+        photo=buf,
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=kb_stats_quick(),
+    )
+    logger.info(f"[CHART] {chart_type} sent to {tg.id}")
 
 
 async def _handle_stop_callback(query, ctx, tg, action: str) -> None:

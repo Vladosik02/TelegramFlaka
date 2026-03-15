@@ -26,15 +26,44 @@ def log_metrics(user_id: int, date: str, weight_kg: float = None,
                 sleep_hours: float = None, energy: int = None,
                 mood: int = None, water_liters: float = None,
                 steps: int = None, notes: str = None) -> int:
+    """
+    Создаёт или обновляет запись метрик за день (upsert по user_id + date).
+    Если запись за дату уже есть — обновляет только переданные (не-None) поля,
+    не затирая существующие данные. Защита от дублей при retry.
+    """
     conn = get_connection()
-    cur = conn.execute(
-        """INSERT INTO metrics
-           (user_id, date, weight_kg, sleep_hours, energy, mood, water_liters, steps, notes)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (user_id, date, weight_kg, sleep_hours, energy, mood, water_liters, steps, notes)
-    )
-    conn.commit()
-    return cur.lastrowid
+    existing = conn.execute(
+        "SELECT id FROM metrics WHERE user_id = ? AND date = ?",
+        (user_id, date)
+    ).fetchone()
+
+    if existing:
+        # Обновляем только поля, которые явно переданы (не None)
+        updates: dict = {}
+        if weight_kg   is not None: updates["weight_kg"]    = weight_kg
+        if sleep_hours is not None: updates["sleep_hours"]  = sleep_hours
+        if energy      is not None: updates["energy"]       = energy
+        if mood        is not None: updates["mood"]         = mood
+        if water_liters is not None: updates["water_liters"] = water_liters
+        if steps       is not None: updates["steps"]        = steps
+        if notes       is not None: updates["notes"]        = notes
+        if updates:
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            conn.execute(
+                f"UPDATE metrics SET {set_clause} WHERE user_id = ? AND date = ?",
+                list(updates.values()) + [user_id, date]
+            )
+            conn.commit()
+        return existing["id"]
+    else:
+        cur = conn.execute(
+            """INSERT INTO metrics
+               (user_id, date, weight_kg, sleep_hours, energy, mood, water_liters, steps, notes)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (user_id, date, weight_kg, sleep_hours, energy, mood, water_liters, steps, notes)
+        )
+        conn.commit()
+        return cur.lastrowid
 
 
 def get_workouts_range(user_id: int, days: int = 7) -> list[dict]:

@@ -109,6 +109,51 @@ def update_plan_json(plan_id: str, plan_json_str: str, ai_rationale: str | None 
     logger.info(f"[PLAN] Updated plan_json for plan_id={plan_id}")
 
 
+def mark_plan_day_completed(user_id: int, date: str) -> bool:
+    """
+    Помечает день `date` как completed=True в plan_json активного плана.
+    Одновременно инкрементирует workouts_completed счётчик.
+    Возвращает True если день найден и обновлён, False иначе.
+    """
+    plan = get_active_plan(user_id)
+    if not plan:
+        return False
+
+    try:
+        days = json.loads(plan["plan_json"])
+    except Exception:
+        return False
+
+    updated = False
+    for day in days:
+        if day.get("date") == date and day.get("type") not in ("rest", "recovery"):
+            if not day.get("completed"):
+                day["completed"] = True
+                updated = True
+            break
+
+    if not updated:
+        return False
+
+    try:
+        new_json = json.dumps(days, ensure_ascii=False)
+        conn = get_connection()
+        conn.execute(
+            """UPDATE training_plan
+               SET plan_json = ?,
+                   workouts_completed = workouts_completed + 1,
+                   updated_at = datetime('now')
+               WHERE plan_id = ? AND status = 'active'""",
+            (new_json, plan["plan_id"]),
+        )
+        conn.commit()
+        logger.info(f"[PLAN] Day {date} marked completed for user_id={user_id}")
+        return True
+    except Exception as e:
+        logger.warning(f"[PLAN] mark_plan_day_completed failed for user_id={user_id}: {e}")
+        return False
+
+
 def increment_workouts_completed(user_id: int, week_start: str) -> None:
     """
     Увеличивает счётчик завершённых тренировок активного плана.
