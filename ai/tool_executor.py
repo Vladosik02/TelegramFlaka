@@ -64,6 +64,14 @@ async def execute_tool_calls(
             logger.error(f"[TOOL] Error in '{tool_name}' for {tg_id}: {e}")
             result_content = {"error": str(e), "success": False}
 
+        # Уведомляем пользователя если инструмент не сработал (Фаза 14)
+        if isinstance(result_content, dict) and result_content.get("success") is False:
+            try:
+                from bot.debug import notify_tool_result
+                await notify_tool_result(bot, chat_id, tool_name, result_content)
+            except Exception as de:
+                logger.warning(f"[TOOL] debug notify failed: {de}")
+
         results.append({
             "type": "tool_result",
             "tool_use_id": tool_use_id,
@@ -189,8 +197,8 @@ async def _tool_save_metrics(tg_id: int, inp: dict, **kwargs) -> dict:
                 importance=4,
                 ttl_days=60,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[TOOL] save_metrics: episodic save failed for {tg_id}: {e}")
 
     saved_fields = [k for k, v in inp.items() if v is not None and k != "notes"]
     logger.info(f"[TOOL] save_metrics: user={tg_id}, fields={saved_fields}")
@@ -229,6 +237,11 @@ async def _tool_save_exercise_result(tg_id: int, inp: dict, **kwargs) -> dict:
     if not user:
         return {"error": "User not found", "success": False}
 
+    # Валидация обязательных полей (Фаза 14.2)
+    if not inp.get("exercise_name"):
+        logger.warning(f"[TOOL] save_exercise_result: missing exercise_name for {tg_id}")
+        return {"error": "Missing required field: exercise_name", "success": False}
+
     today = datetime.date.today().isoformat()
     result_id = log_exercise_result(
         user_id=user["id"],
@@ -259,6 +272,16 @@ async def _tool_set_personal_record(tg_id: int, inp: dict, **kwargs) -> dict:
     user = get_user(tg_id)
     if not user:
         return {"error": "User not found", "success": False}
+
+    # Валидация обязательных полей (Фаза 14.2)
+    for field in ("exercise_name", "record_value", "record_type"):
+        if field not in inp or inp[field] is None:
+            logger.warning(f"[TOOL] set_personal_record: missing '{field}' for {tg_id}")
+            return {"error": f"Missing required field: {field}", "success": False}
+    valid_types = ("weight", "reps", "time")
+    if inp["record_type"] not in valid_types:
+        logger.warning(f"[TOOL] set_personal_record: invalid record_type '{inp['record_type']}' for {tg_id}")
+        return {"error": f"record_type must be one of: {valid_types}", "success": False}
 
     uid = user["id"]
     today = datetime.date.today().isoformat()
@@ -314,8 +337,8 @@ async def _tool_set_personal_record(tg_id: int, inp: dict, **kwargs) -> dict:
             importance=8,
             ttl_days=90,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[TOOL] set_personal_record: episodic save failed for {tg_id}: {e}")
 
     logger.info(f"[TOOL] set_personal_record: {exercise}={new_value}{record_type} +{xp_awarded}XP")
     return {

@@ -1,0 +1,106 @@
+name: 🚀 Deploy Trainer Bot
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:       # Ручной запуск из GitHub UI
+
+jobs:
+  # ── Lint & Syntax Check ────────────────────────────────────────────────────
+  check:
+    name: 🔍 Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check syntax (all .py files)
+        run: |
+          # Core
+          python -m py_compile config.py main.py backup.py
+          # DB
+          python -m py_compile db/connection.py db/writer.py
+          python -m py_compile db/queries/user.py db/queries/workouts.py
+          python -m py_compile db/queries/context.py db/queries/stats.py
+          python -m py_compile db/queries/exercises.py db/queries/memory.py
+          python -m py_compile db/queries/nutrition.py db/queries/daily_summary.py
+          python -m py_compile db/queries/fitness_metrics.py db/queries/training_plan.py
+          python -m py_compile db/queries/monthly_summary.py
+          # AI
+          python -m py_compile ai/context_builder.py ai/client.py ai/response_parser.py
+          # Bot
+          python -m py_compile bot/keyboards.py bot/commands.py bot/handlers.py bot/admin.py
+          # Scheduler
+          python -m py_compile scheduler/logic.py scheduler/jobs.py scheduler/nudges.py
+          echo "✅ All files OK"
+
+  # ── Tests ──────────────────────────────────────────────────────────────────
+  test:
+    name: 🧪 Run Tests
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        run: |
+          python -m pytest tests/ -v --tb=short -p no:cacheprovider
+          echo "✅ All tests passed"
+
+  # ── Deploy ─────────────────────────────────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy to VPS
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            set -e
+            cd /opt/trainer-bot
+
+            echo "📥 Pulling latest code..."
+            git pull origin main
+
+            echo "💾 Backing up DB..."
+            if [ -f data/trainer.db ]; then
+              cp data/trainer.db "backups/ci-$(date +%Y%m%d-%H%M%S).db"
+            fi
+
+            echo "🐳 Rebuilding Docker image..."
+            docker compose build --no-cache
+
+            echo "🔄 Restarting bot..."
+            docker compose up -d
+
+            echo "⏳ Waiting for startup..."
+            sleep 15
+
+            echo "✅ Container status:"
+            docker compose ps
+
+            echo "📋 Last 20 log lines:"
+            docker compose logs --tail=20
