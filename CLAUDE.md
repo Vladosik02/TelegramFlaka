@@ -19,7 +19,7 @@ Vladislav (Vlad), 23 года, разработчик персонального
 | **Фаза 14** | Infrastructure & Bug Fixes: silent exceptions, input validation, upsert, cleanup | ✅ Закрыта |
 | **Фаза 15** | Plan sync, progressive overload hints, /today dashboard, quick meal presets | ✅ Закрыта |
 | **Фаза 16** | Smoke tests, chart buttons в /stats, weekly digest в чат, streak protection | ✅ Закрыта |
-| **Сессия 2026-03-17** | CI/CD, bug fixes, prompts rewrite, cost optimization, UX polish | 🔄 В процессе |
+| **Сессия 2026-03-17** | CI/CD, bug fixes, prompts rewrite, cost optimization, nutrition A/B/C, SSH fix | ✅ Закрыта |
 
 → Детали: memory/projects/
 
@@ -107,6 +107,7 @@ AsyncIOScheduler запускается в `post_init(application)` — посл
 | monthly_summary | 1-е число 09:00 | AI-резюме месяца |
 | checkins_cleanup | вс 22:00 | `cleanup_old_checkins()` |
 | streak_protection | 20:00 ежедн | `broadcast_streak_protection()` |
+| nutrition_analysis | 21:45 ежедн | `run_nutrition_analysis()` — паттерны питания |
 
 ## Multi-user
 Все 26 таблиц БД изолированы по `user_id` (Telegram ID). Новый пользователь → /start → онбординг. QUICK_MEAL_PRESETS — глобальные (одинаковые для всех, можно сделать персональными).
@@ -129,6 +130,41 @@ AsyncIOScheduler запускается в `post_init(application)` — посл
 | Page | URL |
 |------|-----|
 | ROADMAP | https://www.notion.so/31c8fb7a86e3812a8e20d04186ebebe9 |
+
+## CI/CD — Известные грабли (выучено болью)
+
+### SSH-ключ на GCP VM
+**Проблема:** `google-guest-agent` периодически перезаписывает `~/.ssh/authorized_keys` из instance metadata. Ключ, добавленный напрямую в файл, пропадает после синхронизации.
+**Постоянное решение:** ключ должен быть в **instance metadata** (не project metadata):
+- GCP Console → Compute Engine → VM → Edit → SSH Keys → Add item
+- ИЛИ: `gcloud compute instances add-metadata INSTANCE --metadata ssh-keys="mrvald19:KEY" --zone ZONE`
+- `gcloud compute project-info add-metadata` — требует `roles/owner`, у нас нет. Не использовать.
+- `gcloud auth login --enable-gdrive-access` — если gcloud ругается на scopes
+**Текущий ключ в GitHub Secrets:** `deploy_key` (ed25519, создан 2026-03-17, комментарий `github-actions-deploy`)
+**Публичный ключ:** `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILiwi9FQ26lou4YSF82VCzzDrfiittp+isV84N1gtSUj`
+
+### deploy.yml — правильные параметры appleboy/ssh-action@v1.0.3
+- ✅ `timeout:` — таймаут соединения (НЕ `connect_timeout:` — его нет в v1.0.3)
+- ✅ `command_timeout:` — таймаут выполнения скрипта
+- ✅ `git fetch origin && git reset --hard origin/main` — вместо `git pull` (не падает на divergent branches)
+- ✅ `docker compose down || true` — не падает если контейнер уже остановлен
+- ✅ `docker compose logs --tail=20 || true` — не убивает деплой в конце
+- ✅ `continue-on-error: true` на notify-шагах — SSH-хик при уведомлении не ломает статус деплоя
+
+### Права на backups/
+`backups/` принадлежит `botuser` (uid=1001, Docker). Деплой-скрипт запускается от `mrvald19`.
+Постоянный фикс: `sudo chown -R mrvald19:mrvald19 /opt/trainer-bot/backups` на сервере.
+В deploy.yml: `sudo chown -R "$(id -u):$(id -g)" backups/ 2>/dev/null || true` перед cp.
+
+### pytest без env vars
+`config.py` падает при импорте если `TELEGRAM_TOKEN`/`ANTHROPIC_API_KEY` не заданы.
+Фикс в `tests/conftest.py` — первые строки файла (до любых imports):
+```python
+import os
+if not os.environ.get("TELEGRAM_TOKEN"): os.environ["TELEGRAM_TOKEN"] = "test_token_ci"
+if not os.environ.get("ANTHROPIC_API_KEY"): os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+```
+Используем `if not get()` а не `setdefault` — потому что переменная может быть в env как пустая строка.
 
 ## Current Issues
 Нет открытых известных багов. Бот работает на продакшне (2026-03-17).
