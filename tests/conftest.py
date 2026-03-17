@@ -8,9 +8,19 @@ tests/conftest.py — Общие фикстуры для всех тестов.
      — патч db.connection не затрагивает её).
   • Вспомогательная функция insert_user создаёт тестового пользователя.
 """
+import os
+
+# ── Заглушки переменных окружения ─────────────────────────────────────────────
+# Устанавливаем ДО первого импорта config.py — иначе он упадёт с ValueError.
+# В CI значения уже заданы через env: в workflow — там они непустые, не затронем.
+# Используем "or" вместо setdefault, чтобы перезаписать пустые строки тоже.
+if not os.environ.get("TELEGRAM_TOKEN"):
+    os.environ["TELEGRAM_TOKEN"] = "test_token_ci"
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-key-ci"
+
 import sqlite3
 import datetime
-import os
 import pytest
 from unittest.mock import patch
 

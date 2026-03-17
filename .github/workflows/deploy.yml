@@ -38,6 +38,8 @@ jobs:
           python -m py_compile ai/context_builder.py ai/client.py ai/response_parser.py
           python -m py_compile bot/keyboards.py bot/commands.py bot/handlers.py bot/admin.py
           python -m py_compile scheduler/logic.py scheduler/jobs.py scheduler/nudges.py
+          python -m py_compile scheduler/nutrition_analysis.py
+          python -m py_compile db/queries/usage.py db/queries/recovery.py
           echo "✅ All files OK"
 
   # ── Tests ──────────────────────────────────────────────────────────────────
