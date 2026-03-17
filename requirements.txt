@@ -1,6 +1,13 @@
-python-telegram-bot==20.7
+python-telegram-bot[ext]==20.7
 anthropic>=0.25.0
 apscheduler==3.10.4
 python-dotenv==1.0.0
-openai>=1.0.0        # Whisper API для голосовых сообщений
-pytest>=7.0.0        # тесты (Фаза 8.5)
+openai>=1.0.0
+matplotlib
+pandas
+numpy
+aiosqlite
+pytz
+aiohttp
+pytest>=7.0.0
+pytest-asyncio>=0.21.0

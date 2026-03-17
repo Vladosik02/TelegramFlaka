@@ -50,6 +50,7 @@ HELP_TEXT = """
 /setup — изменить расписание и предпочтения
 /meal — записать КБЖУ приёма пищи
 /export — скачать историю тренировок CSV
+/costs — расходы на AI ($)
 /help — эта справка
 /reset — сбросить все данные ⚠️
 
@@ -813,6 +814,69 @@ async def _send_history(message, user: dict, days: int) -> None:
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     from bot.admin import cmd_admin as _admin_handler
     await _admin_handler(update, ctx)
+
+
+# ─── /costs ──────────────────────────────────────────────────────────────────
+
+async def cmd_costs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /costs — личная статистика расходов на AI за разные периоды.
+    Показывает стоимость в $ за сегодня / неделю / месяц / всё время.
+    """
+    tg = update.effective_user
+    user = get_user(tg.id)
+    if not user:
+        await update.message.reply_text("Нет данных. Напиши /start")
+        return
+
+    try:
+        from db.queries.usage import get_usage_stats, get_daily_breakdown
+        from bot.keyboards import kb_costs_quick
+
+        stats = get_usage_stats(user["id"])
+
+        def _fmt(s: dict) -> str:
+            cost   = s.get("cost", 0)
+            calls  = s.get("calls", 0)
+            avg_t  = s.get("avg_time", 0)
+            if calls == 0:
+                return "_нет данных_"
+            avg_str = f"  ·  ⏱ {avg_t:.1f}с" if avg_t else ""
+            return f"`${cost:.4f}`  ({calls} запр.{avg_str})"
+
+        # Разбивка по дням (последние 7 дней)
+        daily = get_daily_breakdown(user["id"], days=7)
+        day_lines = []
+        for d in daily[-5:]:  # последние 5 дней
+            day_str = d["day"][5:]  # "03-17"
+            day_lines.append(f"  {day_str}: `${d['cost']:.4f}`  ({d['calls']} зап.)")
+
+        day_section = ""
+        if day_lines:
+            day_section = "\n*По дням (последние 5):*\n" + "\n".join(day_lines) + "\n"
+
+        name = user.get("name") or tg.first_name
+        text = (
+            f"💰 *Расходы на AI — {name}*\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            f"Сегодня:    {_fmt(stats['today'])}\n"
+            f"7 дней:     {_fmt(stats['week'])}\n"
+            f"30 дней:    {_fmt(stats['month'])}\n"
+            f"Всё время:  {_fmt(stats['all'])}\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            f"{day_section}"
+            "\n_Под каждым ответом бота — сноска с временем и стоимостью._"
+        )
+
+        await update.message.reply_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=kb_costs_quick(),
+        )
+
+    except Exception as e:
+        logger.error(f"[CMD] /costs error for {tg.id}: {e}")
+        await update.message.reply_text("⚠️ Не удалось загрузить данные. Попробуй позже.")
 
 
 # ─── /reset ──────────────────────────────────────────────────────────────────

@@ -37,6 +37,21 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         "ALTER TABLE memory_athlete ADD COLUMN baseline_plank_sec INTEGER",
         # v1.4 — привязка тренировок к плану (Фаза 8.3)
         "ALTER TABLE workouts ADD COLUMN plan_id TEXT REFERENCES training_plan(plan_id)",
+        # v1.5 — таблица логирования расходов Anthropic API
+        """CREATE TABLE IF NOT EXISTS ai_usage_log (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER NOT NULL REFERENCES user_profile(id),
+            timestamp           TEXT    NOT NULL,
+            model               TEXT    NOT NULL,
+            input_tokens        INTEGER NOT NULL DEFAULT 0,
+            output_tokens       INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+            cost_usd            REAL    NOT NULL DEFAULT 0.0,
+            response_time_sec   REAL,
+            call_type           TEXT    DEFAULT 'chat'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_usage_log_user_ts ON ai_usage_log(user_id, timestamp)",
     ]
     for sql in migrations:
         try:

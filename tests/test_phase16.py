@@ -9,6 +9,7 @@ tests/test_phase16.py — Smoke tests для критических путей �
   16.1e  tool_executor dispatch — неизвестный tool возвращает error
   16.1f  mark_plan_day_completed — пропускает rest-день (не помечает)
 """
+import asyncio
 import json
 import datetime
 import pytest
@@ -23,8 +24,8 @@ def test_log_metrics_no_duplicate(patched_db):
 
     uid = 500
     patched_db.execute(
-        "INSERT OR IGNORE INTO user_profile (telegram_id, name, active) VALUES (?,?,?)",
-        (uid, "Test", 1),
+        "INSERT OR IGNORE INTO user_profile (id, telegram_id, name, active) VALUES (?,?,?,?)",
+        (uid, uid, "Test", 1),
     )
     patched_db.commit()
 
@@ -47,8 +48,8 @@ def test_log_metrics_upsert_preserves_existing(patched_db):
 
     uid = 501
     patched_db.execute(
-        "INSERT OR IGNORE INTO user_profile (telegram_id, name, active) VALUES (?,?,?)",
-        (uid, "Test2", 1),
+        "INSERT OR IGNORE INTO user_profile (id, telegram_id, name, active) VALUES (?,?,?,?)",
+        (uid, uid, "Test2", 1),
     )
     patched_db.commit()
 
@@ -90,8 +91,8 @@ def test_mark_plan_day_completed_sets_flag(patched_db):
 
     uid = 502
     patched_db.execute(
-        "INSERT OR IGNORE INTO user_profile (telegram_id, name, active) VALUES (?,?,?)",
-        (uid, "Test3", 1),
+        "INSERT OR IGNORE INTO user_profile (id, telegram_id, name, active) VALUES (?,?,?,?)",
+        (uid, uid, "Test3", 1),
     )
     patched_db.commit()
     today = datetime.date.today().isoformat()
@@ -113,8 +114,8 @@ def test_mark_plan_day_completed_skips_rest(patched_db):
 
     uid = 503
     patched_db.execute(
-        "INSERT OR IGNORE INTO user_profile (telegram_id, name, active) VALUES (?,?,?)",
-        (uid, "Test4", 1),
+        "INSERT OR IGNORE INTO user_profile (id, telegram_id, name, active) VALUES (?,?,?,?)",
+        (uid, uid, "Test4", 1),
     )
     patched_db.commit()
     today = datetime.date.today().isoformat()
@@ -135,8 +136,8 @@ def test_mark_plan_day_completed_no_double_count(patched_db):
 
     uid = 504
     patched_db.execute(
-        "INSERT OR IGNORE INTO user_profile (telegram_id, name, active) VALUES (?,?,?)",
-        (uid, "Test5", 1),
+        "INSERT OR IGNORE INTO user_profile (id, telegram_id, name, active) VALUES (?,?,?,?)",
+        (uid, uid, "Test5", 1),
     )
     patched_db.commit()
     today = datetime.date.today().isoformat()
@@ -159,8 +160,8 @@ def test_get_streak_consecutive(patched_db):
 
     uid = 505
     patched_db.execute(
-        "INSERT OR IGNORE INTO user_profile (telegram_id, name, active) VALUES (?,?,?)",
-        (uid, "Streak", 1),
+        "INSERT OR IGNORE INTO user_profile (id, telegram_id, name, active) VALUES (?,?,?,?)",
+        (uid, uid, "Streak", 1),
     )
     patched_db.commit()
 
@@ -183,8 +184,8 @@ def test_get_streak_broken(patched_db):
 
     uid = 506
     patched_db.execute(
-        "INSERT OR IGNORE INTO user_profile (telegram_id, name, active) VALUES (?,?,?)",
-        (uid, "Gap", 1),
+        "INSERT OR IGNORE INTO user_profile (id, telegram_id, name, active) VALUES (?,?,?,?)",
+        (uid, uid, "Gap", 1),
     )
     patched_db.commit()
 
@@ -208,18 +209,18 @@ def test_tool_executor_unknown_tool():
     """execute_tool с неизвестным именем возвращает словарь с ключом 'error'."""
     from ai.tool_executor import execute_tool
 
-    result = execute_tool("nonexistent_tool_xyz", {}, user_id=1)
+    result = asyncio.run(execute_tool(tg_id=1, tool_name="nonexistent_tool_xyz", tool_input={}))
 
     assert isinstance(result, dict), "ожидается словарь"
     assert "error" in result, "должен содержать ключ 'error'"
     assert result.get("success") is not True
 
 
-def test_tool_executor_save_workout_missing_fields():
+def test_tool_executor_save_workout_missing_fields(patched_db):
     """save_workout без обязательных полей возвращает error (валидация входных данных)."""
     from ai.tool_executor import execute_tool
 
-    result = execute_tool("save_workout", {}, user_id=1)
+    result = asyncio.run(execute_tool(tg_id=1, tool_name="save_workout", tool_input={}))
 
     assert isinstance(result, dict)
     assert "error" in result or result.get("success") is False

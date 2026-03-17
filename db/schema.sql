@@ -437,3 +437,22 @@ CREATE INDEX IF NOT EXISTS idx_xp_log_user              ON xp_log(user_id, creat
 CREATE INDEX IF NOT EXISTS idx_episodic_user_type       ON episodic_memory(user_id, episode_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_episodic_expires         ON episodic_memory(user_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_mesocycles_user          ON mesocycles(user_id, completed_at);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- AI USAGE LOG — отслеживание расходов Anthropic API
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS ai_usage_log (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL REFERENCES user_profile(id),
+    timestamp           TEXT    NOT NULL,
+    model               TEXT    NOT NULL,
+    input_tokens        INTEGER NOT NULL DEFAULT 0,
+    output_tokens       INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+    cost_usd            REAL    NOT NULL DEFAULT 0.0,
+    response_time_sec   REAL,
+    call_type           TEXT    DEFAULT 'chat'   -- chat | scheduled | agent
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_log_user_ts  ON ai_usage_log(user_id, timestamp);

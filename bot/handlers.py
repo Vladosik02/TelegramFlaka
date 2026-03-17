@@ -1128,7 +1128,11 @@ async def _handle_menu_callback(
             f"{xp_str}"
             "\nЧто будем делать?"
         )
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_main_menu())
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_main_menu())
+        except Exception:
+            # Фото/медиа-сообщение — edit_message_text не работает, отправляем новое
+            await query.message.reply_text(text, parse_mode="Markdown", reply_markup=kb_main_menu())
         return
 
     # ── Статистика ──────────────────────────────────────────────────────────

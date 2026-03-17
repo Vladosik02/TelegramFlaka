@@ -333,6 +333,15 @@ def kb_admin_main() -> InlineKeyboardMarkup:
          InlineKeyboardButton("⚙️ Задачи",       callback_data="adm:jobs")],
         [InlineKeyboardButton("📢 Рассылка",     callback_data="adm:broadcast"),
          InlineKeyboardButton("⚡ Триггер",      callback_data="adm:trigger")],
+        [InlineKeyboardButton("💰 Расходы AI",   callback_data="adm:costs")],
+    ])
+
+
+def kb_costs_quick() -> InlineKeyboardMarkup:
+    """Быстрые действия под /costs."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Статистика",   callback_data="menu:stats"),
+         InlineKeyboardButton("🏠 Главное меню", callback_data="menu:home")],
     ])
 
 

@@ -3,8 +3,10 @@ ai/client.py — Обёртка над Anthropic API (sync + async streaming + T
 
 Фаза 10.1 — добавлен агентный цикл generate_agent_response().
 """
+import html
 import json
 import logging
+import time
 import anthropic
 from config import ANTHROPIC_API_KEY, MODEL, MAX_TOKENS
 
@@ -257,6 +259,15 @@ async def generate_agent_response(
     sent_msg = await bot.send_message(chat_id=chat_id, text="✍️")
     final_text = ""
 
+    # ── Трекинг расходов ──────────────────────────────────────────────────────
+    _t_start = time.monotonic()
+    _usage_total = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+    }
+
     try:
         for iteration in range(MAX_AGENT_ITERATIONS):
             response = await async_client.messages.create(
@@ -270,6 +281,13 @@ async def generate_agent_response(
             # Извлекаем текстовые блоки и tool_use блоки
             text_blocks = [b for b in response.content if b.type == "text"]
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+
+            # Накапливаем токены по всем итерациям
+            if hasattr(response, "usage") and response.usage:
+                _usage_total["input_tokens"]  += getattr(response.usage, "input_tokens", 0)
+                _usage_total["output_tokens"] += getattr(response.usage, "output_tokens", 0)
+                _usage_total["cache_read"]    += getattr(response.usage, "cache_read_input_tokens", 0)
+                _usage_total["cache_write"]   += getattr(response.usage, "cache_creation_input_tokens", 0)
 
             # Если нет tool_use — это финальный ответ
             if not tool_use_blocks or response.stop_reason == "end_turn":
@@ -353,12 +371,55 @@ async def generate_agent_response(
             await sent_msg.edit_text("✅ Готово.")
             final_text = "✅ Готово."
 
+        # ── Логирование расходов + сноска в сообщении ─────────────────────────
+        try:
+            from db.queries.usage import log_usage, calc_cost
+            from db.queries.user import get_user
+
+            _elapsed = time.monotonic() - _t_start
+            _user_db = get_user(tg_id)
+            _user_db_id = _user_db["id"] if _user_db else tg_id
+
+            _cost = log_usage(
+                user_id=_user_db_id,
+                model=MODEL,
+                input_tokens=_usage_total["input_tokens"],
+                output_tokens=_usage_total["output_tokens"],
+                cache_read=_usage_total["cache_read"],
+                cache_write=_usage_total["cache_write"],
+                response_time_sec=_elapsed,
+                call_type="agent",
+            )
+
+            # Сноска: время ответа + стоимость
+            _footnote = (
+                f"\n\n<blockquote>⏱ {_elapsed:.1f}с  ·  ${_cost:.4f}</blockquote>"
+            )
+            _full_msg = html.escape(final_text) + _footnote
+            try:
+                await sent_msg.edit_text(_full_msg, parse_mode="HTML")
+            except Exception:
+                pass  # если сообщение уже удалено или слишком длинное
+
+        except Exception as _e:
+            logger.debug(f"[USAGE] Footnote skipped: {_e}")
+
         # Детектируем случай «сообщение о еде/тренировке, но tools не вызваны» (Фаза 14)
-        _NUTRITION_KEYWORDS = ("съел", "поел", "обед", "завтрак", "ужин", "перекус",
-                               "выпил", "ккал", "калори", "питание", "кбжу")
-        _WORKOUT_KEYWORDS = ("потренировался", "тренировка", "занимался", "тренил",
-                             "отжимания", "приседания", "подтягивания")
-        _METRICS_KEYWORDS = ("поспал", "сон", "энергия", "вешу", "вес ")
+        # Расширенные keywords: добавлены украинские/разговорные варианты (сьел, скушал и т.д.)
+        _NUTRITION_KEYWORDS = (
+            "съел", "сьел", "поел", "скушал", "кушал", "покушал",
+            "питался", "обед", "завтрак", "ужин", "перекус",
+            "выпил", "ккал", "калори", "питание", "кбжу",
+        )
+        # Только прошедшее время / завершённые тренировки — убираем «тренировка»
+        # чтобы не срабатывать на разговоры о планировании («буду тренироваться»)
+        _WORKOUT_DONE_KEYWORDS = (
+            "потренировался", "потренировалась", "занимался", "занималась",
+            "тренил", "тренанулся", "отжался", "отжимался",
+            "приседал", "подтянулся", "выполнил тренировку",
+            "закончил тренировку", "сделал тренировку",
+        )
+        _METRICS_KEYWORDS = ("поспал", "поспала", "сон", "вешу", "вес ")
         all_tools_called_in_session = any(
             (b.type == "tool_use")
             for msg in messages
@@ -367,10 +428,15 @@ async def generate_agent_response(
         )
         if not all_tools_called_in_session and final_text:
             msg_lower = user_message.lower()
+            resp_lower = final_text.lower()
             expected: list[str] = []
             if any(kw in msg_lower for kw in _NUTRITION_KEYWORDS):
                 expected.append("save_nutrition")
-            if any(kw in msg_lower for kw in _WORKOUT_KEYWORDS):
+            # Дополнительно: бот написал «записал» без реального tool call — hallucination
+            elif any(kw in resp_lower for kw in ("записал", "зафиксировал", "сохранил")):
+                if any(kw in msg_lower for kw in ("ел", "ела", "пил", "пила", "еда", "пицц", "бургер", "рулет", "суп")):
+                    expected.append("save_nutrition")
+            if any(kw in msg_lower for kw in _WORKOUT_DONE_KEYWORDS):
                 expected.append("save_workout")
             if any(kw in msg_lower for kw in _METRICS_KEYWORDS):
                 expected.append("save_metrics")

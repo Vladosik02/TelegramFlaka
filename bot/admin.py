@@ -56,12 +56,63 @@ def _build_overview_text() -> str:
     active_count = len(users)
     today = datetime.date.today().isoformat()
     active_today = sum(1 for u in users if u.get("last_active") == today)
+
+    # Суммарные расходы за сегодня
+    cost_today_str = ""
+    try:
+        from db.queries.usage import get_global_usage_stats
+        g = get_global_usage_stats(since_days=1)
+        cost_today_str = f"💰 Расходы сегодня: *${g['total_cost']:.4f}*\n"
+    except Exception:
+        pass
+
     return (
         "🛠 *Панель администратора*\n\n"
         f"👥 Активных пользователей: *{active_count}*\n"
-        f"🟢 Активны сегодня: *{active_today}*\n\n"
-        "Выбери действие:"
+        f"🟢 Активны сегодня: *{active_today}*\n"
+        f"{cost_today_str}"
+        "\nВыбери действие:"
     )
+
+
+def _build_costs_text() -> str:
+    """Расходы AI по всем пользователям за 30 дней."""
+    try:
+        from db.queries.usage import get_all_users_usage, get_global_usage_stats
+
+        global_30 = get_global_usage_stats(since_days=30)
+        global_7  = get_global_usage_stats(since_days=7)
+        global_1  = get_global_usage_stats(since_days=1)
+
+        lines = [
+            "💰 *Расходы Anthropic API*\n",
+            f"Сегодня:    `${global_1['total_cost']:.4f}`  ({global_1['total_calls']} зап.)",
+            f"7 дней:     `${global_7['total_cost']:.4f}`  ({global_7['total_calls']} зап.)",
+            f"30 дней:    `${global_30['total_cost']:.4f}`  ({global_30['total_calls']} зап.)",
+            "━━━━━━━━━━━━━━━━━",
+            f"*По пользователям (30 дн.):*",
+        ]
+
+        users = get_all_users_usage(since_days=30)
+        if users:
+            for u in users[:15]:
+                name  = u.get("name") or f"id{u.get('telegram_id', '?')}"
+                cost  = u.get("total_cost", 0)
+                calls = u.get("total_calls", 0)
+                if calls == 0:
+                    lines.append(f"  💤 {name}: —")
+                else:
+                    lines.append(f"  👤 *{name}*: `${cost:.4f}` ({calls} зап.)")
+            if len(users) > 15:
+                lines.append(f"\n_…и ещё {len(users) - 15}_")
+        else:
+            lines.append("_Данных пока нет_")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"[Admin] _build_costs_text error: {e}")
+        return "💰 *Расходы*\n\nОшибка при загрузке данных."
 
 
 def _build_users_text() -> str:
@@ -147,6 +198,12 @@ async def handle_admin_callback(
     if data == "home":
         text = _build_overview_text()
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_admin_main())
+        return
+
+    # ── Расходы AI ────────────────────────────────────────────────────────────
+    if data == "costs":
+        text = _build_costs_text()
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_admin_back())
         return
 
     # ── Список пользователей ───────────────────────────────────────────────────
