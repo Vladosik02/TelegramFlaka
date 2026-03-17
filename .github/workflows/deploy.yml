@@ -112,7 +112,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || '22' }}
-          connect_timeout: 30s
+          timeout: 30s
           command_timeout: 15m
           debug: false
           script: |
@@ -120,7 +120,8 @@ jobs:
             cd /opt/trainer-bot
 
             echo "📥 Pulling latest code..."
-            git pull origin main
+            git fetch origin
+            git reset --hard origin/main
 
             echo "💾 Backing up DB..."
             if [ -f data/trainer.db ]; then
@@ -153,7 +154,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || '22' }}
-          connect_timeout: 15s
+          timeout: 15s
           command_timeout: 30s
           script: |
             cd /opt/trainer-bot
@@ -176,7 +177,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || '22' }}
-          connect_timeout: 15s
+          timeout: 15s
           command_timeout: 30s
           script: |
             cd /opt/trainer-bot
