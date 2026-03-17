@@ -126,14 +126,16 @@ jobs:
             echo "💾 Backing up DB..."
             if [ -f data/trainer.db ]; then
               mkdir -p backups
-              cp data/trainer.db "backups/ci-$(date +%Y%m%d-%H%M%S).db"
+              sudo chown -R "$(id -u):$(id -g)" backups/ 2>/dev/null || true
+              cp data/trainer.db "backups/ci-$(date +%Y%m%d-%H%M%S).db" \
+                || echo "⚠️ DB backup skipped (permission issue — run: sudo chown -R mrvald19:mrvald19 /opt/trainer-bot/backups)"
             fi
 
             echo "🐳 Rebuilding Docker image..."
             docker compose build --no-cache
 
             echo "🔄 Restarting bot..."
-            docker compose down
+            docker compose down || true
             docker compose up -d
 
             echo "⏳ Waiting for startup..."
@@ -143,11 +145,12 @@ jobs:
             docker compose ps
 
             echo "📋 Last 20 log lines:"
-            docker compose logs --tail=20
+            docker compose logs --tail=20 || true
 
       # Уведомляем об успешном деплое (читаем TELEGRAM_TOKEN и ADMIN_USER_ID из .env на сервере)
       - name: Notify deployment success
         if: success()
+        continue-on-error: true
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -171,6 +174,7 @@ jobs:
       # При падении деплоя — тоже уведомляем
       - name: Notify deployment failure
         if: failure()
+        continue-on-error: true
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
