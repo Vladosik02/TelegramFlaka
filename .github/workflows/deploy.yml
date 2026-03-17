@@ -23,7 +23,6 @@ jobs:
 
       - name: Check syntax (all .py files)
         env:
-          # Подставляем заглушки, чтобы config.py не ругался при импорте
           TELEGRAM_TOKEN: "fake_token_for_syntax_check"
           ANTHROPIC_API_KEY: "fake_key"
         run: |
@@ -60,10 +59,9 @@ jobs:
 
       - name: Run pytest
         env:
-          # Критически важные переменные для успешного прохождения тестов
           TELEGRAM_TOKEN: "12345678:FakeTokenForTesting"
           ANTHROPIC_API_KEY: "sk-ant-fake-key"
-          DB_PATH: ":memory:" # Тесты будут использовать базу в оперативной памяти
+          DB_PATH: ":memory:"
         run: |
           python -m pytest tests/ -v --tb=short -p no:cacheprovider
           echo "✅ All tests passed"
@@ -76,13 +74,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Проверяем что все нужные секреты заданы
+      - name: Validate secrets
+        run: |
+          missing=""
+          [ -z "${{ secrets.SERVER_HOST }}"    ] && missing="$missing SERVER_HOST"
+          [ -z "${{ secrets.SERVER_USER }}"    ] && missing="$missing SERVER_USER"
+          [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ] && missing="$missing SSH_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "❌ Missing required secrets:$missing"
+            exit 1
+          fi
+          echo "✅ All secrets present"
+
+      # Подготавливаем ключ и тестируем соединение перед деплоем
+      - name: Test SSH connectivity
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Добавляем хост в known_hosts чтобы не было интерактивного запроса
+          ssh-keyscan -p ${{ secrets.SERVER_PORT || '22' }} \
+            ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          # Проверяем соединение
+          ssh -i ~/.ssh/deploy_key \
+              -p ${{ secrets.SERVER_PORT || '22' }} \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=15 \
+              -o BatchMode=yes \
+              ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
+              "echo '✅ SSH OK — $(hostname)'"
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SERVER_PORT || 22 }}
+          port: ${{ secrets.SERVER_PORT || '22' }}
+          connect_timeout: 30s
+          command_timeout: 15m
+          debug: false
           script: |
             set -e
             cd /opt/trainer-bot
@@ -100,6 +132,7 @@ jobs:
             docker compose build --no-cache
 
             echo "🔄 Restarting bot..."
+            docker compose down
             docker compose up -d
 
             echo "⏳ Waiting for startup..."
@@ -110,3 +143,48 @@ jobs:
 
             echo "📋 Last 20 log lines:"
             docker compose logs --tail=20
+
+      # Уведомляем об успешном деплое (читаем TELEGRAM_TOKEN и ADMIN_USER_ID из .env на сервере)
+      - name: Notify deployment success
+        if: success()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || '22' }}
+          connect_timeout: 15s
+          command_timeout: 30s
+          script: |
+            cd /opt/trainer-bot
+            source .env 2>/dev/null || true
+            if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$ADMIN_USER_ID" ]; then
+              COMMIT_MSG=$(git log -1 --pretty=format:"%s" 2>/dev/null || echo "unknown")
+              SHORT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                -d chat_id="${ADMIN_USER_ID}" \
+                -d text="✅ Деплой успешен%0A%0A🔖 ${SHORT_SHA}: ${COMMIT_MSG}%0A⏰ $(date '+%d.%m %H:%M')" \
+                > /dev/null
+            fi
+
+      # При падении деплоя — тоже уведомляем
+      - name: Notify deployment failure
+        if: failure()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || '22' }}
+          connect_timeout: 15s
+          command_timeout: 30s
+          script: |
+            cd /opt/trainer-bot
+            source .env 2>/dev/null || true
+            if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$ADMIN_USER_ID" ]; then
+              SHORT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                -d chat_id="${ADMIN_USER_ID}" \
+                -d text="❌ Деплой упал%0A🔖 ${SHORT_SHA}%0A⏰ $(date '+%d.%m %H:%M')%0ASee: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                > /dev/null
+            fi
