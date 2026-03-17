@@ -3,11 +3,12 @@ db/queries/recovery.py — Recovery Score.
 
 Фаза 12.3: Композитная метрика готовности к тренировке (0–100).
 
-Формула:
-  sleep_score    (35%) — сон ≥7ч = 100%, меньше — линейно
-  energy_score   (30%) — энергия 4-5/5 = 100%
-  load_score     (20%) — отсутствие тяжёлых тренировок (≥8/10) 2+ дня
-  consistency    (15%) — есть данные за 3+ дня (пользователь отчитывается)
+Формула (v2 — с питанием):
+  sleep_score    (30%) — сон ≥7ч = 100%, меньше — линейно
+  energy_score   (25%) — энергия 4-5/5 = 100%
+  nutrition_score(20%) — достаточно калорий и белка за последние 2 дня
+  load_score     (15%) — отсутствие тяжёлых тренировок (≥8/10) 2+ дня
+  consistency    (10%) — есть данные за 3+ дня (пользователь отчитывается)
 
 Диапазоны:
   80-100 — ✅ Отлично. Готов к максимуму
@@ -102,24 +103,87 @@ def compute_recovery_score(user_id: int) -> dict:
     )
     consistency_score = min(100, round(days_with_data / 3 * 100))
 
-    # ── Итоговый балл ─────────────────────────────────────────────────────────
+    # ── 5. Nutrition score (v2) ───────────────────────────────────────────────
+    # Достаточность питания за последние 2 дня: калории + белок vs цели
+    nutrition_score = 50  # нейтрально по умолчанию (нет данных)
+    try:
+        from db.queries.nutrition import get_nutrition_log
+        from db.queries.memory import get_l2_brief
+
+        since_2d_str = (today - datetime.timedelta(days=2)).isoformat()
+        nut_rows = conn.execute("""
+            SELECT calories, protein_g
+            FROM nutrition_log
+            WHERE user_id = ? AND date >= ?
+            ORDER BY date DESC LIMIT 2
+        """, (user_id, since_2d_str)).fetchall()
+
+        if nut_rows:
+            l2 = get_l2_brief(user_id) or {}
+            goal_cal  = l2.get("daily_calories") or 2500
+            goal_prot = l2.get("protein_g")      or 150
+
+            cal_scores  = []
+            prot_scores = []
+            for nr in nut_rows:
+                cal  = nr["calories"]  or 0
+                prot = nr["protein_g"] or 0
+                # Калорийный score: < 70% цели = критически мало, > 70% = линейно до 100
+                if cal > 0:
+                    cal_pct = cal / goal_cal
+                    if cal_pct >= 0.85:
+                        cal_scores.append(100)
+                    elif cal_pct >= 0.70:
+                        cal_scores.append(round((cal_pct - 0.70) / 0.15 * 60 + 40))
+                    else:
+                        cal_scores.append(max(0, round(cal_pct / 0.70 * 40)))
+                # Белковый score: < 80% цели = штраф
+                if prot > 0:
+                    prot_pct = prot / goal_prot
+                    if prot_pct >= 0.95:
+                        prot_scores.append(100)
+                    elif prot_pct >= 0.80:
+                        prot_scores.append(round((prot_pct - 0.80) / 0.15 * 40 + 60))
+                    else:
+                        prot_scores.append(max(0, round(prot_pct / 0.80 * 60)))
+
+            if cal_scores or prot_scores:
+                all_scores = cal_scores + prot_scores
+                nutrition_score = round(sum(all_scores) / len(all_scores))
+    except Exception as _e:
+        logger.debug(f"[RECOVERY] nutrition_score calc failed: {_e}")
+
+    # ── Итоговый балл (v2: 5 компонентов) ────────────────────────────────────
     score = round(
-        sleep_score    * 0.35
-        + energy_score * 0.30
-        + load_score   * 0.20
-        + consistency_score * 0.15
+        sleep_score       * 0.30
+        + energy_score    * 0.25
+        + nutrition_score * 0.20
+        + load_score      * 0.15
+        + consistency_score * 0.10
     )
     score = max(0, min(100, score))
 
-    # ── Интерпретация ─────────────────────────────────────────────────────────
+    # ── Интерпретация + совет учитывает питание ───────────────────────────────
+    low_nutrition = nutrition_score < 50
+
     if score >= 80:
-        label, emoji, advice = "Отлично", "✅", "Готов к максимальной нагрузке — жми на все!"
+        label, emoji = "Отлично", "✅"
+        advice = "Готов к максимальной нагрузке — жми на все!"
     elif score >= 60:
-        label, emoji, advice = "Хорошо", "🟡", "Хороший день для тренировки в умеренном темпе."
+        label, emoji = "Хорошо", "🟡"
+        advice = "Хороший день для тренировки в умеренном темпе."
+        if low_nutrition:
+            advice = "Неплохо, но питание подкачало — добери белок перед тренировкой."
     elif score >= 40:
-        label, emoji, advice = "Среднее", "⚠️", "Лёгкая тренировка или активное восстановление."
+        label, emoji = "Среднее", "⚠️"
+        advice = "Лёгкая тренировка или активное восстановление."
+        if low_nutrition:
+            advice = "Лёгкая нагрузка. Сначала поешь нормально — дефицит калорий тормозит рост."
     else:
-        label, emoji, advice = "Низко", "🔴", "Тело просит отдыха. Приоритет — сон и питание."
+        label, emoji = "Низко", "🔴"
+        advice = "Тело просит отдыха. Приоритет — сон, питание и восстановление."
+        if low_nutrition:
+            advice = "Стоп. Ешь. Калорийный дефицит + усталость = риск перетренировки."
 
     return {
         "score": score,
@@ -129,6 +193,7 @@ def compute_recovery_score(user_id: int) -> dict:
         "breakdown": {
             "sleep":       sleep_score,
             "energy":      energy_score,
+            "nutrition":   nutrition_score,
             "load":        load_score,
             "consistency": consistency_score,
         },
@@ -170,6 +235,7 @@ def format_recovery_message(user_id: int) -> str:
             "*Компоненты:*",
             f"• 😴 Сон:          {b['sleep']}/100",
             f"• ⚡ Энергия:      {b['energy']}/100",
+            f"• 🍽 Питание:      {b.get('nutrition', 50)}/100",
             f"• 🏋️ Нагрузка:     {b['load']}/100",
             f"• 📊 Регулярность: {b['consistency']}/100",
             "",

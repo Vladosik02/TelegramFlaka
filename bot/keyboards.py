@@ -354,6 +354,7 @@ def kb_admin_triggers() -> InlineKeyboardMarkup:
          InlineKeyboardButton("📈 Недельная сводка", callback_data="adm:trigger:weekly")],
         [InlineKeyboardButton("🔔 Нудж-проверка",   callback_data="adm:trigger:nudges"),
          InlineKeyboardButton("📅 Месячный отчёт",  callback_data="adm:trigger:monthly")],
+        [InlineKeyboardButton("🥗 Анализ питания",  callback_data="adm:trigger:nutrition_analysis")],
         [InlineKeyboardButton("« Назад", callback_data="adm:home")],
     ])
 

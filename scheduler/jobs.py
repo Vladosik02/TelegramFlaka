@@ -17,6 +17,7 @@ from scheduler.logic import (
 )
 from scheduler.nudges import check_and_send_nudges
 from scheduler.periodization import advance_all_mesocycles  # Фаза 12.2
+from scheduler.nutrition_analysis import run_nutrition_analysis  # Фаза 16: паттерны питания
 from config import (
     SCHEDULE_MAX_MORNING, SCHEDULE_MAX_AFTERNOON, SCHEDULE_MAX_EVENING,
     DAILY_SUMMARY_TIME, WEEKLY_SUMMARY_DAY,
@@ -24,6 +25,7 @@ from config import (
     TRAINING_PLAN_ARCHIVE_TIME, TRAINING_PLAN_GENERATE_TIME,
     NUDGE_CHECK_TIME,
     PRE_WORKOUT_MORNING_TIME, PRE_WORKOUT_EVENING_TIME,
+    NUTRITION_ANALYSIS_TIME,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,5 +227,16 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
         replace_existing=True,
     )
     logger.info("Streak protection scheduled: daily 20:00")
+
+    # ── Анализ паттернов питания — ежедневно 21:45 ───────────────────────────
+    nah, nam = _parse_time(NUTRITION_ANALYSIS_TIME)
+    scheduler.add_job(
+        run_nutrition_analysis, "cron",
+        hour=nah, minute=nam,
+        args=[bot],
+        id="nutrition_analysis",
+        replace_existing=True,
+    )
+    logger.info(f"Nutrition analysis scheduled: {NUTRITION_ANALYSIS_TIME}")
 
     logger.info("All scheduler jobs registered")

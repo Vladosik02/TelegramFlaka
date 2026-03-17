@@ -302,12 +302,13 @@ async def handle_admin_broadcast(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _TRIGGER_LABELS = {
-    "morning":  "🌅 Утренний чек-ин",
-    "evening":  "🌙 Вечерний чек-ин",
-    "daily":    "📊 Дневная сводка",
-    "weekly":   "📈 Недельная сводка",
-    "nudges":   "🔔 Нудж-проверка",
-    "monthly":  "📅 Месячный отчёт",
+    "morning":            "🌅 Утренний чек-ин",
+    "evening":            "🌙 Вечерний чек-ин",
+    "daily":              "📊 Дневная сводка",
+    "weekly":             "📈 Недельная сводка",
+    "nudges":             "🔔 Нудж-проверка",
+    "monthly":            "📅 Месячный отчёт",
+    "nutrition_analysis": "🥗 Анализ питания",
 }
 
 
@@ -342,6 +343,10 @@ async def _run_trigger(query, ctx: ContextTypes.DEFAULT_TYPE, task: str) -> None
         elif task == "monthly":
             from scheduler.logic import broadcast_monthly_summary
             await broadcast_monthly_summary()
+
+        elif task == "nutrition_analysis":
+            from scheduler.nutrition_analysis import run_nutrition_analysis
+            await run_nutrition_analysis(bot)
 
         else:
             await query.edit_message_text(

@@ -3,7 +3,7 @@ name: 🚀 Deploy Trainer Bot
 on:
   push:
     branches: [main]
-  workflow_dispatch:       # Ручной запуск из GitHub UI
+  workflow_dispatch:
 
 jobs:
   # ── Lint & Syntax Check ────────────────────────────────────────────────────
@@ -22,10 +22,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Check syntax (all .py files)
+        env:
+          # Подставляем заглушки, чтобы config.py не ругался при импорте
+          TELEGRAM_TOKEN: "fake_token_for_syntax_check"
+          ANTHROPIC_API_KEY: "fake_key"
         run: |
-          # Core
           python -m py_compile config.py main.py backup.py
-          # DB
           python -m py_compile db/connection.py db/writer.py
           python -m py_compile db/queries/user.py db/queries/workouts.py
           python -m py_compile db/queries/context.py db/queries/stats.py
@@ -33,11 +35,8 @@ jobs:
           python -m py_compile db/queries/nutrition.py db/queries/daily_summary.py
           python -m py_compile db/queries/fitness_metrics.py db/queries/training_plan.py
           python -m py_compile db/queries/monthly_summary.py
-          # AI
           python -m py_compile ai/context_builder.py ai/client.py ai/response_parser.py
-          # Bot
           python -m py_compile bot/keyboards.py bot/commands.py bot/handlers.py bot/admin.py
-          # Scheduler
           python -m py_compile scheduler/logic.py scheduler/jobs.py scheduler/nudges.py
           echo "✅ All files OK"
 
@@ -58,6 +57,11 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run pytest
+        env:
+          # Критически важные переменные для успешного прохождения тестов
+          TELEGRAM_TOKEN: "12345678:FakeTokenForTesting"
+          ANTHROPIC_API_KEY: "sk-ant-fake-key"
+          DB_PATH: ":memory:" # Тесты будут использовать базу в оперативной памяти
         run: |
           python -m pytest tests/ -v --tb=short -p no:cacheprovider
           echo "✅ All tests passed"
@@ -67,7 +71,6 @@ jobs:
     name: 🚀 Deploy to VPS
     needs: test
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -87,6 +90,7 @@ jobs:
 
             echo "💾 Backing up DB..."
             if [ -f data/trainer.db ]; then
+              mkdir -p backups
               cp data/trainer.db "backups/ci-$(date +%Y%m%d-%H%M%S).db"
             fi
 

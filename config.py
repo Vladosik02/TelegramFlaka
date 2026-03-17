@@ -50,7 +50,8 @@ REMINDER_MAX_COUNT    = 3
 STOP_MAX_DAYS         = 30
 
 # ─── Агрегация ────────────────────────────────────────────────────────────────
-DAILY_SUMMARY_TIME   = "23:00"
+DAILY_SUMMARY_TIME        = "23:00"
+NUTRITION_ANALYSIS_TIME   = "21:45"  # анализ паттернов питания (после daily_summary)
 WEEKLY_SUMMARY_DAY   = 6   # воскресенье (0=пн)
 MONTHLY_SUMMARY_TIME = "09:00"  # 1-е число каждого месяца (Фаза 8.1)
 MONTHLY_BACKUP_TIME  = "03:00"

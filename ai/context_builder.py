@@ -381,42 +381,124 @@ def _build_l1_deep_bio(uid: int) -> str | None:
 
 
 def _build_l2_nutrition(uid: int, deep: bool) -> str | None:
-    """L2 Nutrition. Brief (~120 tok) всегда, deep (~200 tok) при food."""
+    """
+    L2 Nutrition.
+    Brief (~140 tok) всегда — цели + тренды vs цель + статус.
+    Deep  (~220 tok) при food — журнал 3 дней + активные инсайты.
+    """
+    from db.queries.nutrition import get_nutrition_log, get_nutrition_summary, get_active_insights
+
     data = get_l2_deep(uid) if deep else get_l2_brief(uid)
     lines = ["## Питание (L2)"]
-    if data and data.get("daily_calories"):
+
+    goal_cal  = data.get("daily_calories")  if data else None
+    goal_prot = data.get("protein_g")       if data else None
+    goal_fat  = data.get("fat_g")           if data else None
+    goal_carb = data.get("carbs_g")         if data else None
+
+    if goal_cal:
         lines.append(
-            f"Цель КБЖУ: {data['daily_calories']} ккал / "
-            f"Б{data.get('protein_g', '?')}г / "
-            f"Ж{data.get('fat_g', '?')}г / "
-            f"У{data.get('carbs_g', '?')}г"
+            f"Цель: {goal_cal} ккал / Б{goal_prot or '?'}г / "
+            f"Ж{goal_fat or '?'}г / У{goal_carb or '?'}г"
         )
-    if deep and data:
-        if data.get("supplements"):
-            lines.append(f"Добавки: {', '.join(data['supplements'])}")
-        if data.get("restrictions"):
-            lines.append(f"Ограничения: {', '.join(data['restrictions'])}")
-        if data.get("last_meal_notes"):
-            lines.append(f"Последние заметки о питании: {data['last_meal_notes']}")
+
+    # ── Тренды vs цель (7 дней) — brief + deep ────────────────────────────────
+    try:
+        summary7 = get_nutrition_summary(uid, days=7)
+        log7     = get_nutrition_log(uid, days=7)
+        log_days = summary7.get("log_days", 0)
+
+        if log_days > 0:
+            avg_cal  = summary7.get("avg_calories")  or 0
+            avg_prot = summary7.get("avg_protein")   or 0
+            avg_fat  = summary7.get("avg_fat")        or 0
+            avg_carb = summary7.get("avg_carbs")      or 0
+            junk_cnt = summary7.get("junk_food_days") or 0
+
+            trend_parts = []
+
+            # Калории vs цель
+            if goal_cal and avg_cal:
+                pct = round(avg_cal / goal_cal * 100)
+                delta = avg_cal - goal_cal
+                sign = "+" if delta > 0 else ""
+                flag = " ⚠️" if pct < 85 or pct > 120 else (" ✅" if 90 <= pct <= 110 else "")
+                trend_parts.append(f"Ккал {avg_cal:.0f}/{goal_cal} ({pct}%{sign}{delta:.0f}){flag}")
+
+            # Белок vs цель — самое важное для набора массы
+            if goal_prot and avg_prot:
+                pct = round(avg_prot / goal_prot * 100)
+                flag = " ⚠️ дефицит белка" if pct < 80 else (" ✅" if pct >= 95 else "")
+                trend_parts.append(f"Белок {avg_prot:.0f}/{goal_prot}г ({pct}%){flag}")
+            elif goal_prot and not avg_prot:
+                trend_parts.append("Белок: нет данных")
+
+            # Дни логирования
+            trend_parts.append(f"Дней с записью: {log_days}/7")
+
+            # Вода (средняя за неделю)
+            avg_water = summary7.get("avg_water_ml") or 0
+            if avg_water:
+                water_flag = " ⚠️ мало воды" if avg_water < 1500 else ""
+                trend_parts.append(f"Вода ср.: {avg_water:.0f}мл{water_flag}")
+
+            # Читмилы
+            if junk_cnt >= 2:
+                trend_parts.append(f"Читмилов за неделю: {junk_cnt} 🍔")
+
+            lines.append("7 дней: " + "  |  ".join(trend_parts))
+
+        elif log_days == 0:
+            lines.append("Питание: данных за последние 7 дней нет")
+
+    except Exception:
+        pass
+
+    # ── Deep-режим: доп. поля + журнал 3 дней + инсайты ─────────────────────
     if deep:
-        from db.queries.nutrition import get_nutrition_log, get_active_insights
+        if data:
+            if data.get("supplements"):
+                lines.append(f"Добавки: {', '.join(data['supplements'])}")
+            if data.get("restrictions"):
+                lines.append(f"Ограничения: {', '.join(data['restrictions'])}")
+            if data.get("last_meal_notes"):
+                lines.append(f"Заметки: {data['last_meal_notes']}")
+
         recent_log = get_nutrition_log(uid, days=3)
         if recent_log:
             log_lines = []
             for entry in recent_log[:3]:
                 parts = []
-                if entry.get("calories"):   parts.append(f"{entry['calories']} ккал")
-                if entry.get("protein_g"):  parts.append(f"Б{entry['protein_g']}г")
-                if entry.get("water_ml"):   parts.append(f"вода {entry['water_ml']}мл")
-                if entry.get("junk_food"):  parts.append("🍔 читмил")
+                if entry.get("calories"):
+                    cal_str = str(int(entry["calories"])) + " ккал"
+                    # Пометить дефицит/профицит
+                    if goal_cal:
+                        pct = entry["calories"] / goal_cal * 100
+                        if pct < 75:
+                            cal_str += " ⬇️"
+                        elif pct > 120:
+                            cal_str += " ⬆️"
+                    parts.append(cal_str)
+                if entry.get("protein_g"):
+                    prot_str = f"Б{int(entry['protein_g'])}г"
+                    if goal_prot and entry["protein_g"] / goal_prot < 0.80:
+                        prot_str += "⬇️"
+                    parts.append(prot_str)
+                if entry.get("fat_g"):   parts.append(f"Ж{int(entry['fat_g'])}г")
+                if entry.get("carbs_g"): parts.append(f"У{int(entry['carbs_g'])}г")
+                if entry.get("water_ml"):
+                    parts.append(f"💧{int(entry['water_ml'])}мл")
+                if entry.get("junk_food"): parts.append("🍔читмил")
                 if parts:
                     log_lines.append(f"  {entry['date']}: {', '.join(parts)}")
             if log_lines:
-                lines.append("Журнал за 3 дня:\n" + "\n".join(log_lines))
+                lines.append("Журнал (3 дня):\n" + "\n".join(log_lines))
+
         insights = get_active_insights(uid, limit=2)
         if insights:
             insight_lines = [f"  ⚠️ {i['description']}" for i in insights]
-            lines.append("Рекомендации AI:\n" + "\n".join(insight_lines))
+            lines.append("AI-рекомендации:\n" + "\n".join(insight_lines))
+
     return "\n".join(lines) if len(lines) > 1 else None
 
 
