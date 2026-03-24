@@ -15,6 +15,7 @@ Claude получает набор инструментов и вызывает 
   7. get_weekly_stats      — получить статистику за неделю
   8. save_episode          — сохранить эпизод в эпизодическую память
   9. award_xp              — начислить XP (только для внутреннего использования)
+  14. get_workout_prediction — прогноз тренировки на сегодня (веса, повторы, RPE)
 """
 
 from typing import List
@@ -310,6 +311,16 @@ TOOL_UPDATE_ATHLETE_CARD = {
                 "type": "string",
                 "enum": ["bulk", "cut", "maintain", "peak"],
                 "description": "Текущий тренировочный сезон/фаза"
+            },
+            "equipment": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Список доступного оборудования. Примеры: "
+                    "['турник', 'гантели 20кг', 'штанга', 'гири 16кг', 'резинки', 'скакалка']. "
+                    "Пустой список [] = только вес тела. "
+                    "Вызывай когда пользователь говорит что у него есть/нет оборудования."
+                )
             }
         },
         "required": [],
@@ -532,10 +543,73 @@ TOOL_GET_USER_PROFILE = {
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# 14. get_workout_prediction (Workout Prediction — предиктивный брифинг)
+# ───────────────────────────────────────────────────────────────────────────
+TOOL_GET_WORKOUT_PREDICTION = {
+    "name": "get_workout_prediction",
+    "description": (
+        "Получает AI-прогноз тренировки на сегодня: рекомендуемые веса, "
+        "повторения, RPE-потолок для каждого упражнения из активного плана. "
+        "Учитывает Recovery Score, фазу мезоцикла, последние результаты и сон. "
+        "Вызывай когда пользователь спрашивает 'что делать сегодня', "
+        "'какие веса брать', 'мой прогноз', 'подскажи нагрузку', "
+        "'с каким весом работать', или перед тренировкой."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False
+    }
+}
+
+# ───────────────────────────────────────────────────────────────────────────
+# 15. save_training_plan (WRITE — сохранение/обновление плана по запросу)
+# ───────────────────────────────────────────────────────────────────────────
+TOOL_SAVE_TRAINING_PLAN = {
+    "name": "save_training_plan",
+    "description": (
+        "Сохраняет или обновляет тренировочный план в базе данных. "
+        "ОБЯЗАТЕЛЬНО вызывай этот инструмент ПОСЛЕ того как составил или скорректировал план: "
+        "когда пользователь просит 'составь план', 'перестрой план', 'убери гантели из плана', "
+        "'измени расписание', 'переделай план', 'скорректируй программу' и т.п. "
+        "Без вызова этого инструмента план существует только в сообщении, но НЕ сохраняется в БД."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "plan_json": {
+                "type": "string",
+                "description": (
+                    "JSON-строка с массивом из 7 дней. Каждый день: "
+                    "{\"date\": \"YYYY-MM-DD\", \"weekday\": \"Пн\", \"type\": \"strength\", "
+                    "\"label\": \"...\", \"exercises\": [...], \"duration_min\": 60, "
+                    "\"completed\": false, \"ai_note\": \"...\"}. "
+                    "Типы: strength | cardio | hiit | mobility | rest | recovery."
+                )
+            },
+            "rationale": {
+                "type": "string",
+                "description": "Краткое обоснование плана (1-3 предложения): что учтено, почему такой набор."
+            },
+            "week_start": {
+                "type": "string",
+                "description": (
+                    "Дата начала недели в формате YYYY-MM-DD (понедельник). "
+                    "Если не указано — используется следующий понедельник."
+                )
+            }
+        },
+        "required": ["plan_json"],
+        "additionalProperties": False
+    }
+}
+
+# ───────────────────────────────────────────────────────────────────────────
 # Экспорт: полный список инструментов для передачи в Anthropic API
 # ───────────────────────────────────────────────────────────────────────────
 ALL_TOOLS: List[dict] = [
-    # WRITE (8)
+    # WRITE (9)
     TOOL_SAVE_WORKOUT,
     TOOL_SAVE_METRICS,
     TOOL_SAVE_NUTRITION,
@@ -544,13 +618,146 @@ ALL_TOOLS: List[dict] = [
     TOOL_UPDATE_ATHLETE_CARD,
     TOOL_SAVE_EPISODE,
     TOOL_AWARD_XP,
-    # READ (5)
+    TOOL_SAVE_TRAINING_PLAN,
+    # READ (6)
     TOOL_GET_WEEKLY_STATS,
     TOOL_GET_NUTRITION_HISTORY,
     TOOL_GET_PERSONAL_RECORDS,
     TOOL_GET_CURRENT_PLAN,
     TOOL_GET_USER_PROFILE,
+    TOOL_GET_WORKOUT_PREDICTION,
 ]
 
 # Словарь для быстрого lookup по имени
 TOOL_BY_NAME: dict = {t["name"]: t for t in ALL_TOOLS}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOKEN OPTIMIZATION (Фаза 17) — умный выбор инструментов
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Проблема: ALL_TOOLS (15 инструментов) занимают ~3000 токенов на каждый запрос.
+# Для записи еды нужны только save_nutrition + save_episode (~476 tok).
+# Экономия: ~2500 токенов input per request только на tool definitions.
+#
+# Дополнительно: CRUD-запросы (запись данных без вопросов) переключаются на
+# Haiku вместо Sonnet — 20× дешевле. Итого экономия ~40-50× на рутине.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Минимальные наборы по тегу
+_TOOLS_FOOD: List[dict] = [
+    TOOL_SAVE_NUTRITION,
+    TOOL_SAVE_EPISODE,
+]
+_TOOLS_TRAINING: List[dict] = [
+    TOOL_SAVE_WORKOUT,
+    TOOL_SAVE_EXERCISE_RESULT,
+    TOOL_SET_PERSONAL_RECORD,
+    TOOL_AWARD_XP,
+    TOOL_SAVE_EPISODE,
+]
+_TOOLS_METRICS: List[dict] = [
+    TOOL_SAVE_METRICS,
+]
+_TOOLS_ANALYTICS: List[dict] = [
+    TOOL_GET_WEEKLY_STATS,
+    TOOL_GET_NUTRITION_HISTORY,
+    TOOL_GET_PERSONAL_RECORDS,
+    TOOL_GET_USER_PROFILE,
+]
+_TOOLS_PLAN: List[dict] = [
+    TOOL_GET_CURRENT_PLAN,
+    TOOL_GET_WORKOUT_PREDICTION,
+    TOOL_SAVE_TRAINING_PLAN,
+]
+_TOOLS_HEALTH: List[dict] = [
+    TOOL_UPDATE_ATHLETE_CARD,
+    TOOL_SAVE_EPISODE,
+]
+
+# Weekly report: только чтение + сохранение эпизода (no write tools)
+# Экономия: 13 tools (3502 tok) → 5 tools (~700 tok) = ~2800 tok/запрос
+_TOOLS_WEEKLY_REPORT: List[dict] = [
+    TOOL_GET_WEEKLY_STATS,
+    TOOL_GET_NUTRITION_HISTORY,
+    TOOL_GET_PERSONAL_RECORDS,
+    TOOL_GET_USER_PROFILE,
+    TOOL_SAVE_EPISODE,   # для сохранения недельных инсайтов в долгосрочную память
+]
+
+_TOOLS_BY_TAG: dict[str, List[dict]] = {
+    "food":      _TOOLS_FOOD,
+    "training":  _TOOLS_TRAINING,
+    "metrics":   _TOOLS_METRICS,
+    "analytics": _TOOLS_ANALYTICS,
+    "plan":      _TOOLS_PLAN,
+    "health":    _TOOLS_HEALTH,
+}
+
+# Маркеры вопроса / сложного запроса — форсируют полный пайплайн
+_QUESTION_MARKERS: tuple[str, ...] = (
+    "?",
+    "как ", "почему", "что ", "когда", "сколько",
+    "расскажи", "объясни", "покажи", "помоги",
+    "посоветуй", "сравни", "анализ", "составь",
+    "придумай", "предложи", "порекомендуй",
+    "хочу знать",
+)
+
+# Теги «чистой» записи данных — без аналитики, плана, здоровья
+_CRUD_ONLY_TAGS: frozenset = frozenset({"food", "training", "metrics"})
+
+
+def get_tools_for_tags(tags: frozenset) -> List[dict]:
+    """
+    Возвращает минимальный набор tools для текущего контекста.
+
+    Примеры экономии (tokens per request):
+      food only:     save_nutrition + save_episode       → 476 tok  (было 3064)
+      training only: 5 tools                             → 1142 tok (было 3064)
+      metrics only:  save_metrics                        → 278 tok  (было 3064)
+      analytics:     4 read-tools                        → 557 tok  (было 3064)
+
+    Если теги неизвестны или пусты → возвращаем ALL_TOOLS (безопасный fallback).
+    """
+    if not tags:
+        return ALL_TOOLS
+    seen: set[str] = set()
+    result: List[dict] = []
+    # Обходим теги в фиксированном порядке для воспроизводимости
+    for tag in ("food", "training", "metrics", "analytics", "plan", "health"):
+        if tag not in tags:
+            continue
+        for tool in _TOOLS_BY_TAG.get(tag, []):
+            if tool["name"] not in seen:
+                seen.add(tool["name"])
+                result.append(tool)
+    return result if result else ALL_TOOLS
+
+
+def classify_request_tier(tags: frozenset, text: str) -> str:
+    """
+    Классифицирует запрос по сложности:
+
+    'crud' — простая запись данных:
+      • Только food/training/metrics теги (без analytics/plan/health)
+      • Нет вопросительных маркеров
+      • Текст ≤ 200 символов
+      → Haiku + slim context + filtered tools (~40-50× дешевле Sonnet + ALL_TOOLS)
+
+    'full' — полный пайплайн:
+      • analytics/plan/health теги присутствуют
+      • Вопрос или сложный запрос
+      • Длинный текст (> 200 символов)
+      → Sonnet + полный контекст + ALL_TOOLS
+    """
+    if not tags:
+        return "full"
+    if tags - _CRUD_ONLY_TAGS:          # есть analytics/plan/health → full
+        return "full"
+    t = text.lower()
+    if any(m in t for m in _QUESTION_MARKERS):
+        return "full"
+    if len(text) > 200:
+        return "full"
+    return "crud"

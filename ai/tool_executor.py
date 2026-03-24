@@ -27,6 +27,38 @@ from config import get_trainer_mode
 
 logger = logging.getLogger(__name__)
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ДИСПЕТЧЕР ИНСТРУМЕНТОВ (module-level для валидации при старте)
+# ═══════════════════════════════════════════════════════════════════════════
+# Определяется после объявления всех _tool_* функций в конце файла,
+# но Python позволяет ссылаться на них здесь — заполнится при импорте модуля.
+# Используется в execute_tool() и для startup-валидации в main.py.
+_DISPATCH: dict = {}   # заполняется в _init_dispatch() в конце файла
+
+
+def _init_dispatch() -> None:
+    """Инициализирует глобальный диспетчер после определения всех функций."""
+    global _DISPATCH
+    _DISPATCH = {
+        # WRITE (9)
+        "save_workout":           _tool_save_workout,
+        "save_metrics":           _tool_save_metrics,
+        "save_nutrition":         _tool_save_nutrition,
+        "save_exercise_result":   _tool_save_exercise_result,
+        "set_personal_record":    _tool_set_personal_record,
+        "update_athlete_card":    _tool_update_athlete_card,
+        "save_episode":           _tool_save_episode,
+        "award_xp":               _tool_award_xp,
+        "save_training_plan":     _tool_save_training_plan,
+        # READ (6)
+        "get_weekly_stats":       _tool_get_weekly_stats,
+        "get_nutrition_history":  _tool_get_nutrition_history,
+        "get_personal_records":   _tool_get_personal_records,
+        "get_current_plan":       _tool_get_current_plan,
+        "get_user_profile":       _tool_get_user_profile,
+        "get_workout_prediction": _tool_get_workout_prediction,
+    }
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ГЛАВНАЯ ТОЧКА ВХОДА
@@ -92,25 +124,7 @@ async def execute_tool(
     Маршрутизатор: имя инструмента → функция БД.
     Возвращает словарь с результатом (будет сериализован в JSON).
     """
-    dispatch = {
-        # WRITE (8)
-        "save_workout":         _tool_save_workout,
-        "save_metrics":         _tool_save_metrics,
-        "save_nutrition":       _tool_save_nutrition,
-        "save_exercise_result": _tool_save_exercise_result,
-        "set_personal_record":  _tool_set_personal_record,
-        "update_athlete_card":  _tool_update_athlete_card,
-        "save_episode":         _tool_save_episode,
-        "award_xp":             _tool_award_xp,
-        # READ (5)
-        "get_weekly_stats":     _tool_get_weekly_stats,
-        "get_nutrition_history": _tool_get_nutrition_history,
-        "get_personal_records": _tool_get_personal_records,
-        "get_current_plan":     _tool_get_current_plan,
-        "get_user_profile":     _tool_get_user_profile,
-    }
-
-    handler = dispatch.get(tool_name)
+    handler = _DISPATCH.get(tool_name)
     if not handler:
         logger.warning(f"[TOOL] Unknown tool: '{tool_name}'")
         return {"error": f"Unknown tool: {tool_name}", "success": False}
@@ -388,6 +402,12 @@ async def _tool_update_athlete_card(tg_id: int, inp: dict, **kwargs) -> dict:
             inp["preferred_days"], ensure_ascii=False
         )
         updated.append("preferred_days")
+    if "equipment" in inp:
+        import json as _json
+        training_fields["equipment"] = _json.dumps(
+            inp["equipment"], ensure_ascii=False
+        )
+        updated.append("equipment")
 
     if training_fields:
         upsert_training_intel(uid, **training_fields)
@@ -445,6 +465,7 @@ async def _tool_get_weekly_stats(tg_id: int, inp: dict, **kwargs) -> dict:
     """, (uid, since)).fetchone()
 
     result = {
+        "success": True,
         "period_days": days,
         "workouts_total": workouts["total"] or 0,
         "workouts_done": int(workouts["done"] or 0),
@@ -776,3 +797,162 @@ async def _tool_get_user_profile(tg_id: int, inp: dict, **kwargs) -> dict:
 
     logger.info(f"[TOOL] get_user_profile: user={tg_id}")
     return profile
+
+
+async def _tool_get_workout_prediction(tg_id: int, inp: dict, **kwargs) -> dict:
+    """Получить прогноз тренировки на сегодня."""
+    from scheduler.prediction import build_workout_prediction
+
+    user = get_user(tg_id)
+    if not user:
+        return {"error": "User not found", "success": False}
+
+    prediction = build_workout_prediction(user["id"])
+    if not prediction:
+        return {
+            "success": True,
+            "prediction": None,
+            "message": "Сегодня нет тренировки по плану (отдых или план не создан).",
+        }
+
+    # Формируем компактный результат для Claude
+    exercises_compact = []
+    for ep in prediction.get("exercises", []):
+        ex_data = {
+            "name": ep["exercise_name"],
+            "prediction": ep.get("prediction", {}),
+            "reasoning": ep.get("reasoning", ""),
+        }
+        if ep.get("last_result"):
+            ex_data["last_result"] = ep["last_result"]
+        exercises_compact.append(ex_data)
+
+    result = {
+        "success": True,
+        "date": prediction["date"],
+        "label": prediction["label"],
+        "day_type": prediction["day_type"],
+        "rpe_ceiling": prediction.get("rpe_ceiling"),
+        "summary": prediction.get("summary", ""),
+        "exercises": exercises_compact,
+    }
+
+    # Добавляем контекст recovery и мезоцикла
+    if prediction.get("recovery"):
+        r = prediction["recovery"]
+        result["recovery_score"] = r.get("score")
+        result["recovery_label"] = r.get("label")
+    if prediction.get("meso_phase"):
+        result["meso_phase"] = prediction["meso_phase"]
+        result["meso_week"] = prediction.get("meso_week")
+    if prediction.get("sleep"):
+        result["last_sleep"] = prediction["sleep"]
+    if prediction.get("energy"):
+        result["last_energy"] = prediction["energy"]
+
+    logger.info(
+        f"[TOOL] get_workout_prediction: user={tg_id}, "
+        f"exercises={len(exercises_compact)}, rpe_ceiling={result.get('rpe_ceiling')}"
+    )
+    return result
+
+
+async def _tool_save_training_plan(tg_id: int, inp: dict, **kwargs) -> dict:
+    """
+    Сохраняет или обновляет тренировочный план в БД.
+    Вызывается когда пользователь просит составить/скорректировать план.
+
+    Логика:
+      - Если план на эту неделю ещё не существует — INSERT (workouts_completed=0).
+      - Если план существует И workouts_completed > 0 — UPDATE через update_plan_json()
+        чтобы сохранить уже засчитанные тренировки (пользователь переделывает план
+        в середине недели — нельзя обнулять прогресс).
+      - Если план существует И workouts_completed == 0 — INSERT OR REPLACE (безопасно).
+    """
+    import json as _json
+    from db.queries.training_plan import (
+        save_training_plan, get_current_week_start, get_next_week_start,
+        make_plan_id, get_plan_by_id, update_plan_json,
+    )
+
+    user = get_user(tg_id)
+    if not user:
+        return {"error": "User not found", "success": False}
+
+    uid = user["id"]
+    plan_json_str = inp.get("plan_json", "")
+    rationale     = inp.get("rationale", "")
+    week_start    = inp.get("week_start")
+
+    # Валидация JSON
+    try:
+        days = _json.loads(plan_json_str)
+        if not isinstance(days, list) or len(days) == 0:
+            return {"error": "plan_json must be a non-empty JSON array", "success": False}
+    except Exception as e:
+        return {"error": f"Invalid plan_json: {e}", "success": False}
+
+    # Определяем неделю: если не задана — текущая неделя (или следующая, если сегодня воскресенье)
+    if not week_start:
+        today = datetime.date.today()
+        if today.weekday() == 6:  # воскресенье — план на следующую неделю
+            week_start = get_next_week_start()
+        else:
+            week_start = get_current_week_start()
+
+    # Считаем метрики плана
+    workouts_planned = 0
+    volume_total = 0
+    intensities = []
+    for day in days:
+        if day.get("type") not in ("rest", "recovery"):
+            workouts_planned += 1
+            volume_total += day.get("duration_min") or 0
+        for ex in (day.get("exercises") or []):
+            if ex.get("rpe"):
+                intensities.append(float(ex["rpe"]))
+
+    intensity_avg = round(sum(intensities) / len(intensities), 1) if intensities else None
+
+    # Проверяем: есть ли уже план на эту неделю с выполненными тренировками?
+    # Если да — нельзя делать INSERT OR REPLACE (он обнулит workouts_completed).
+    # Используем update_plan_json() — обновляет только JSON+rationale, сохраняет прогресс.
+    plan_id = make_plan_id(uid, week_start)
+    existing = get_plan_by_id(plan_id)
+
+    if existing and existing.get("workouts_completed", 0) > 0:
+        update_plan_json(plan_id, plan_json_str, rationale or None)
+        completed = existing["workouts_completed"]
+        logger.info(
+            f"[TOOL] save_training_plan: UPDATE (preserved workouts_completed={completed}) "
+            f"user={tg_id}, plan_id={plan_id}, week={week_start}"
+        )
+    else:
+        plan_id = save_training_plan(
+            user_id=uid,
+            week_start=week_start,
+            plan_json_str=plan_json_str,
+            ai_rationale=rationale,
+            workouts_planned=workouts_planned,
+            volume_total=volume_total,
+            intensity_avg=intensity_avg,
+            status="active",
+        )
+        logger.info(
+            f"[TOOL] save_training_plan: INSERT user={tg_id}, plan_id={plan_id}, "
+            f"week={week_start}, workouts={workouts_planned}"
+        )
+
+    return {
+        "success": True,
+        "plan_id": plan_id,
+        "week_start": week_start,
+        "workouts_planned": workouts_planned,
+        "message": f"Plan saved ✅ (plan_id={plan_id}, week={week_start})",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Инициализация диспетчера (вызывается после определения всех _tool_* функций)
+# ═══════════════════════════════════════════════════════════════════════════
+_init_dispatch()
