@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.eggs
+dist
+build
+*.egg
+
+# Среда
+.env
+.env.*
+!.env.example
+
+# Данные (монтируются как volumes)
+data/
+backups/
+
+# Логи
+*.log
+logs/
+
+# Dev
+.venv
+venv
+.pytest_cache
+tests/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+*.sw?

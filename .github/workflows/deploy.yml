@@ -1,0 +1,200 @@
+name: 🚀 Deploy Trainer Bot
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ── Lint & Syntax Check ────────────────────────────────────────────────────
+  check:
+    name: 🔍 Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check syntax (all .py files)
+        env:
+          TELEGRAM_TOKEN: "fake_token_for_syntax_check"
+          ANTHROPIC_API_KEY: "fake_key"
+        run: |
+          python -m py_compile config.py main.py backup.py
+          python -m py_compile db/connection.py db/writer.py
+          python -m py_compile db/queries/user.py db/queries/workouts.py
+          python -m py_compile db/queries/context.py db/queries/stats.py
+          python -m py_compile db/queries/exercises.py db/queries/memory.py
+          python -m py_compile db/queries/nutrition.py db/queries/daily_summary.py
+          python -m py_compile db/queries/fitness_metrics.py db/queries/training_plan.py
+          python -m py_compile db/queries/monthly_summary.py
+          python -m py_compile ai/context_builder.py ai/client.py ai/response_parser.py
+          python -m py_compile ai/tools.py ai/tool_executor.py ai/morph.py
+          python -m py_compile bot/keyboards.py bot/commands.py bot/handlers.py bot/admin.py
+          python -m py_compile scheduler/logic.py scheduler/jobs.py scheduler/nudges.py
+          python -m py_compile scheduler/nutrition_analysis.py
+          python -m py_compile scheduler/personal_insights.py scheduler/adaptation.py
+          python -m py_compile scheduler/prediction.py scheduler/periodization.py
+          python -m py_compile scheduler/teach_moments.py
+          python -m py_compile db/queries/usage.py db/queries/recovery.py
+          python -m py_compile db/queries/gamification.py db/queries/episodic.py
+          echo "✅ All files OK"
+
+  # ── Tests ──────────────────────────────────────────────────────────────────
+  test:
+    name: 🧪 Run Tests
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        env:
+          TELEGRAM_TOKEN: "12345678:FakeTokenForTesting"
+          ANTHROPIC_API_KEY: "sk-ant-fake-key"
+          DB_PATH: ":memory:"
+        run: |
+          python -m pytest tests/ -v --tb=short -p no:cacheprovider
+          echo "✅ All tests passed"
+
+  # ── Deploy ─────────────────────────────────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy to VPS
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Проверяем что все нужные секреты заданы
+      - name: Validate secrets
+        run: |
+          missing=""
+          [ -z "${{ secrets.SERVER_HOST }}"    ] && missing="$missing SERVER_HOST"
+          [ -z "${{ secrets.SERVER_USER }}"    ] && missing="$missing SERVER_USER"
+          [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ] && missing="$missing SSH_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "❌ Missing required secrets:$missing"
+            exit 1
+          fi
+          echo "✅ All secrets present"
+
+      # Подготавливаем ключ и тестируем соединение перед деплоем
+      - name: Test SSH connectivity
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Добавляем хост в known_hosts чтобы не было интерактивного запроса
+          ssh-keyscan -p ${{ secrets.SERVER_PORT || '22' }} \
+            ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          # Проверяем соединение
+          ssh -i ~/.ssh/deploy_key \
+              -p ${{ secrets.SERVER_PORT || '22' }} \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=15 \
+              -o BatchMode=yes \
+              ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
+              "echo '✅ SSH OK — $(hostname)'"
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || '22' }}
+          timeout: 30s
+          command_timeout: 15m
+          debug: false
+          script: |
+            set -e
+            cd /opt/trainer-bot
+
+            echo "📥 Pulling latest code..."
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "💾 Backing up DB..."
+            if [ -f data/trainer.db ]; then
+              mkdir -p backups
+              sudo chown -R "$(id -u):$(id -g)" backups/ 2>/dev/null || true
+              cp data/trainer.db "backups/ci-$(date +%Y%m%d-%H%M%S).db" \
+                || echo "⚠️ DB backup skipped (permission issue — run: sudo chown -R mrvald19:mrvald19 /opt/trainer-bot/backups)"
+            fi
+
+            echo "🐳 Rebuilding Docker image..."
+            docker compose build --no-cache
+
+            echo "🔄 Restarting bot..."
+            docker compose down || true
+            docker compose up -d
+
+            echo "⏳ Waiting for startup..."
+            sleep 15
+
+            echo "✅ Container status:"
+            docker compose ps
+
+            echo "📋 Last 20 log lines:"
+            docker compose logs --tail=20 || true
+
+      # Уведомляем об успешном деплое (читаем TELEGRAM_TOKEN и ADMIN_USER_ID из .env на сервере)
+      - name: Notify deployment success
+        if: success()
+        continue-on-error: true
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || '22' }}
+          timeout: 15s
+          command_timeout: 30s
+          script: |
+            cd /opt/trainer-bot
+            source .env 2>/dev/null || true
+            if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$ADMIN_USER_ID" ]; then
+              COMMIT_MSG=$(git log -1 --pretty=format:"%s" 2>/dev/null || echo "unknown")
+              SHORT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                -d chat_id="${ADMIN_USER_ID}" \
+                -d text="✅ Деплой успешен%0A%0A🔖 ${SHORT_SHA}: ${COMMIT_MSG}%0A⏰ $(date '+%d.%m %H:%M')" \
+                > /dev/null
+            fi
+
+      # При падении деплоя — тоже уведомляем
+      - name: Notify deployment failure
+        if: failure()
+        continue-on-error: true
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || '22' }}
+          timeout: 15s
+          command_timeout: 30s
+          script: |
+            cd /opt/trainer-bot
+            source .env 2>/dev/null || true
+            if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$ADMIN_USER_ID" ]; then
+              SHORT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                -d chat_id="${ADMIN_USER_ID}" \
+                -d text="❌ Деплой упал%0A🔖 ${SHORT_SHA}%0A⏰ $(date '+%d.%m %H:%M')%0ASee: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                > /dev/null
+            fi
