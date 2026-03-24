@@ -53,6 +53,59 @@ def log_nutrition_day(user_id: int, date: str = None, **fields) -> None:
     conn.commit()
 
 
+def add_nutrition_to_day(user_id: int, date: str = None, **fields) -> None:
+    """
+    Накапливает КБЖУ за день: прибавляет значения к существующим.
+    Если записи за день нет — создаёт новую.
+    Числовые поля (calories, protein_g, fat_g, carbs_g) суммируются.
+    Текстовые поля (meal_notes) дописываются через '; '.
+    """
+    conn = get_connection()
+    if not date:
+        date = datetime.date.today().isoformat()
+
+    ADDITIVE_FIELDS = {"calories", "protein_g", "fat_g", "carbs_g", "water_ml"}
+
+    existing = conn.execute(
+        "SELECT * FROM nutrition_log WHERE user_id = ? AND date = ?",
+        (user_id, date)
+    ).fetchone()
+
+    if existing:
+        existing = dict(existing)
+        updates = {}
+        for k, v in fields.items():
+            if v is None:
+                continue
+            if k in ADDITIVE_FIELDS:
+                old_val = existing.get(k) or 0
+                updates[k] = old_val + v
+            elif k == "meal_notes":
+                old_notes = existing.get("meal_notes") or ""
+                updates[k] = f"{old_notes}; {v}".strip("; ") if old_notes else v
+            else:
+                updates[k] = v
+        if updates:
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            conn.execute(
+                f"UPDATE nutrition_log SET {set_clause} WHERE user_id = ? AND date = ?",
+                list(updates.values()) + [user_id, date]
+            )
+    else:
+        clean = {k: v for k, v in fields.items() if v is not None}
+        clean["user_id"] = user_id
+        clean["date"] = date
+        placeholders = ", ".join("?" * len(clean))
+        cols = ", ".join(clean.keys())
+        conn.execute(
+            f"INSERT INTO nutrition_log ({cols}) VALUES ({placeholders})",
+            list(clean.values())
+        )
+    conn.commit()
+    logger.info(f"[NUTRITION] add_to_day user_id={user_id} date={date}: "
+                + ", ".join(f"{k}={v}" for k, v in fields.items() if v is not None))
+
+
 def get_nutrition_log(user_id: int, days: int = 7) -> list[dict]:
     """Журнал питания за последние N дней, от свежего к старому."""
     conn = get_connection()

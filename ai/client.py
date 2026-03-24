@@ -8,9 +8,28 @@ import json
 import logging
 import time
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL, MAX_TOKENS
+from config import (
+    ANTHROPIC_API_KEY,
+    MODEL, MAX_TOKENS,
+    MODEL_FOOD_PARSE, MAX_TOKENS_FOOD_PARSE,
+    MODEL_SCHEDULED, MAX_TOKENS_SCHEDULED,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _cached_system(system: str) -> list[dict]:
+    """
+    Оборачивает system-prompt в формат с prompt caching.
+    Anthropic кэширует блок на стороне сервера (~5 минут для ephemeral).
+    Экономия: ~40% от стоимости input-токенов системного промпта.
+
+    Использование: вместо system=system → system=_cached_system(system)
+    """
+    if not system:
+        return []
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
 
 # Sync client — для scheduler (плановые сообщения)
 _client: anthropic.Anthropic | None = None
@@ -48,7 +67,7 @@ def ask(system: str, messages: list[dict],
         response = client.messages.create(
             model=MODEL,
             max_tokens=max_tokens,
-            system=system,
+            system=_cached_system(system),
             messages=messages,
         )
         return response.content[0].text
@@ -61,6 +80,58 @@ def ask(system: str, messages: list[dict],
     except Exception as e:
         logger.error(f"Unexpected AI error: {e}")
         return "⚠️ Что-то пошло не так. Попробуй ещё раз."
+
+
+# ── Парсинг еды через Haiku (дёшево, ~0.001$) ────────────────────────────────
+
+def parse_food_with_ai(user_text: str) -> dict | None:
+    """
+    Парсит текст о еде в КБЖУ через Haiku.
+    Возвращает dict {calories, protein_g, fat_g, carbs_g, meal_notes} или None.
+    """
+    import os
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "food_parse.txt")
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        prompt_template = f.read()
+
+    prompt = prompt_template.replace("{user_text}", user_text)
+    client = get_client()
+
+    try:
+        response = client.messages.create(
+            model=MODEL_FOOD_PARSE,
+            max_tokens=MAX_TOKENS_FOOD_PARSE,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+
+        # Убираем возможные markdown-обёртки
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        parsed = json.loads(raw)
+
+        # "ничего не ел"
+        if parsed.get("empty"):
+            return None
+
+        # Валидация: хотя бы калории должны быть
+        if not parsed.get("calories") or parsed["calories"] <= 0:
+            return None
+
+        return {
+            "calories": int(parsed.get("calories", 0)),
+            "protein_g": int(parsed.get("protein_g", 0)),
+            "fat_g": int(parsed.get("fat_g", 0)),
+            "carbs_g": int(parsed.get("carbs_g", 0)),
+            "meal_notes": parsed.get("meal_notes", user_text[:100]),
+        }
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning(f"[FOOD_PARSE] JSON parse failed: {e}, raw={raw[:200] if 'raw' in dir() else '?'}")
+        return None
+    except Exception as e:
+        logger.error(f"[FOOD_PARSE] AI call failed: {e}")
+        return None
 
 
 # ── Асинхронный стриминг (обычный чат) ───────────────────────────────────────
@@ -83,7 +154,7 @@ async def ask_streaming(bot, chat_id: int,
         async with async_client.messages.stream(
             model=MODEL,
             max_tokens=max_tokens,
-            system=system,
+            system=_cached_system(system),
             messages=messages,
         ) as stream:
             async for chunk in stream.text_stream:
@@ -156,13 +227,108 @@ def generate_scheduled_message(context: dict) -> str:
     return ask(system, messages)
 
 
+# ── Общее ядро агентного цикла ───────────────────────────────────────────────
+
+async def _run_agent_iterations(
+    async_client,
+    system: str,
+    messages: list,
+    tools: list,
+    max_iterations: int,
+    tg_id: int,
+    bot,
+    chat_id: int,
+    *,
+    model: str = MODEL,
+    max_tokens: int = MAX_TOKENS,
+    log_prefix: str = "AGENT",
+    on_tool_use=None,
+) -> tuple[str, dict]:
+    """
+    Общее ядро агентного цикла с Tool Use.
+    Мутирует `messages` на месте (добавляет assistant + tool_result сообщения).
+    Возвращает (final_text, usage_totals).
+
+    Параметры:
+        model       — модель для этого цикла (Sonnet / Haiku)
+        max_tokens  — лимит выходных токенов
+        log_prefix  — префикс для логов: "AGENT" или "SCHED-AGENT"
+        on_tool_use — async callable(tool_name: str) для UI-индикаторов
+                      (только в chat loop; None в scheduled loop)
+    """
+    from ai.tool_executor import execute_tool_calls
+
+    usage_totals = {
+        "input_tokens": 0, "output_tokens": 0,
+        "cache_read": 0, "cache_write": 0,
+    }
+    final_text = ""
+
+    for iteration in range(max_iterations):
+        response = await async_client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=_cached_system(system),
+            tools=tools,
+            messages=messages,
+        )
+
+        text_blocks = [b for b in response.content if b.type == "text"]
+        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+
+        if hasattr(response, "usage") and response.usage:
+            usage_totals["input_tokens"]  += getattr(response.usage, "input_tokens", 0)
+            usage_totals["output_tokens"] += getattr(response.usage, "output_tokens", 0)
+            usage_totals["cache_read"]    += getattr(response.usage, "cache_read_input_tokens", 0)
+            usage_totals["cache_write"]   += getattr(response.usage, "cache_creation_input_tokens", 0)
+
+        if not tool_use_blocks or response.stop_reason == "end_turn":
+            if text_blocks:
+                final_text = "".join(b.text for b in text_blocks)
+            break
+
+        tool_names = [t.name for t in tool_use_blocks]
+        logger.info(
+            f"[{log_prefix}] iter={iteration+1} tools_called={tool_names} user={tg_id}"
+        )
+
+        if on_tool_use is not None:
+            await on_tool_use(tool_names[0])
+
+        messages.append({"role": "assistant", "content": response.content})
+
+        tool_results = await execute_tool_calls(
+            tg_id=tg_id,
+            tool_uses=tool_use_blocks,
+            bot=bot,
+            chat_id=chat_id,
+        )
+
+        for tr in tool_results:
+            if isinstance(tr, dict) and tr.get("type") == "tool_result":
+                content_preview = str(tr.get("content", ""))[:200]
+                logger.debug(
+                    f"[{log_prefix}] tool_result id={tr.get('tool_use_id', '?')[:8]}… "
+                    f"content={content_preview}"
+                )
+
+        messages.append({"role": "user", "content": tool_results})
+
+    return final_text, usage_totals
+
+
 async def generate_scheduled_agent_message(
     bot, chat_id: int, context: dict, tg_id: int,
+    tools: list | None = None,
 ) -> str:
     """
     Агентный scheduled message с Tool Use (Agent Fix, Этап 7).
     Для утренних/дневных/вечерних чек-инов — Claude может записывать метрики
     из контекста и вызывать tools.
+
+    Параметры:
+        tools — явный список инструментов. Если None — используются ALL_TOOLS.
+                Для weekly report передавай _TOOLS_WEEKLY_REPORT (~700 tok vs 3502).
 
     Fallback: если agent loop не доступен → обычный sync generate_scheduled_message().
     """
@@ -171,43 +337,26 @@ async def generate_scheduled_agent_message(
 
     try:
         from ai.tools import ALL_TOOLS
-        from ai.tool_executor import execute_tool_calls
+        tools_to_use = tools if tools is not None else ALL_TOOLS
 
         async_client = get_async_client()
         messages = [{"role": "user", "content": prompt}]
 
-        for iteration in range(3):  # макс 3 итерации для scheduled
-            response = await async_client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=system,
-                tools=ALL_TOOLS,
-                messages=messages,
-            )
-
-            text_blocks = [b for b in response.content if b.type == "text"]
-            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-
-            if not tool_use_blocks or response.stop_reason == "end_turn":
-                if text_blocks:
-                    return "".join(b.text for b in text_blocks)
-                break
-
-            logger.info(
-                f"[SCHED-AGENT] iter={iteration+1} tools={[t.name for t in tool_use_blocks]} "
-                f"user={tg_id}"
-            )
-
-            messages.append({"role": "assistant", "content": response.content})
-
-            tool_results = await execute_tool_calls(
-                tg_id=tg_id,
-                tool_uses=tool_use_blocks,
-                bot=bot,
-                chat_id=chat_id,
-            )
-
-            messages.append({"role": "user", "content": tool_results})
+        final_text, _ = await _run_agent_iterations(
+            async_client=async_client,
+            system=system,
+            messages=messages,
+            tools=tools_to_use,
+            max_iterations=3,
+            tg_id=tg_id,
+            bot=bot,
+            chat_id=chat_id,
+            model=MODEL_SCHEDULED,
+            max_tokens=MAX_TOKENS_SCHEDULED,
+            log_prefix="SCHED-AGENT",
+        )
+        if final_text:
+            return final_text
 
     except Exception as e:
         logger.warning(f"[SCHED-AGENT] Fallback to sync for user={tg_id}: {e}")
@@ -221,6 +370,122 @@ async def generate_scheduled_agent_message(
 
 MAX_AGENT_ITERATIONS = 5  # защита от бесконечного цикла
 
+# Статусы инструментов (используется в generate_agent_response и _on_tool_use)
+_STATUS_RU: dict[str, str] = {
+    "save_workout":         "💾 Записываю тренировку…",
+    "save_metrics":         "💾 Сохраняю метрики…",
+    "save_nutrition":       "💾 Записываю питание…",
+    "save_exercise_result": "💾 Записываю упражнение…",
+    "set_personal_record":  "🏆 Фиксирую рекорд…",
+    "update_athlete_card":  "📝 Обновляю профиль…",
+    "get_weekly_stats":     "📊 Загружаю статистику…",
+    "get_nutrition_history":"🥗 Загружаю историю питания…",
+    "get_personal_records": "🏆 Загружаю рекорды…",
+    "get_current_plan":     "📋 Загружаю план…",
+    "get_user_profile":     "👤 Загружаю профиль…",
+    "award_xp":             "⚡ Начисляю XP…",
+    "save_episode":         "🧠 Сохраняю в память…",
+}
+
+
+async def _stream_response(sent_msg, text: str) -> None:
+    """Имитирует стриминг: обновляет сообщение чанками по STREAM_UPDATE_EVERY символов."""
+    chunk_size = STREAM_UPDATE_EVERY
+    displayed = 0
+    while displayed < len(text):
+        end = min(displayed + chunk_size, len(text))
+        try:
+            if end < len(text):
+                await sent_msg.edit_text(text[:end] + " ▍")
+            else:
+                await sent_msg.edit_text(text)
+        except Exception:
+            pass
+        displayed = end
+
+
+async def _log_usage_footnote(
+    sent_msg, tg_id: int, model: str, usage_total: dict, t_start: float,
+    final_text: str,
+) -> None:
+    """Логирует расход токенов в БД и добавляет сноску ⏱ · $ под сообщением."""
+    try:
+        from db.queries.usage import log_usage
+        from db.queries.user import get_user
+
+        _elapsed = time.monotonic() - t_start
+        _user_db = get_user(tg_id)
+        _user_db_id = _user_db["id"] if _user_db else tg_id
+
+        _cost = log_usage(
+            user_id=_user_db_id,
+            model=model,
+            input_tokens=usage_total["input_tokens"],
+            output_tokens=usage_total["output_tokens"],
+            cache_read=usage_total["cache_read"],
+            cache_write=usage_total["cache_write"],
+            response_time_sec=_elapsed,
+            call_type="agent",
+        )
+        _footnote = f"\n\n<blockquote>⏱ {_elapsed:.1f}с  ·  ${_cost:.4f}</blockquote>"
+        try:
+            _full_msg = html.escape(final_text) + _footnote
+            await sent_msg.edit_text(_full_msg, parse_mode="HTML")
+        except Exception:
+            pass  # сообщение уже удалено или слишком длинное
+    except Exception as _e:
+        logger.debug(f"[USAGE] Footnote skipped: {_e}")
+
+
+async def _detect_hallucination(
+    bot, chat_id: int, user_message: str, final_text: str, messages: list
+) -> None:
+    """
+    Детектирует случай «Claude написал 'записал', но tools не вызывал».
+    Шлёт уведомление в debug-чат администратора.
+    """
+    _NUTRITION_KEYWORDS = (
+        "съел", "сьел", "поел", "скушал", "кушал", "покушал",
+        "питался", "обед", "завтрак", "ужин", "перекус",
+        "выпил", "ккал", "калори", "питание", "кбжу",
+    )
+    _WORKOUT_DONE_KEYWORDS = (
+        "потренировался", "потренировалась", "занимался", "занималась",
+        "тренил", "тренанулся", "отжался", "отжимался",
+        "приседал", "подтянулся", "выполнил тренировку",
+        "закончил тренировку", "сделал тренировку",
+    )
+    _METRICS_KEYWORDS = ("поспал", "поспала", "сон", "вешу", "вес ")
+
+    all_tools_called = any(
+        (b.type == "tool_use")
+        for msg in messages
+        if isinstance(msg, dict) and msg.get("role") == "assistant"
+        for b in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+    )
+    if all_tools_called or not final_text:
+        return
+
+    msg_lower = user_message.lower()
+    resp_lower = final_text.lower()
+    expected: list[str] = []
+    if any(kw in msg_lower for kw in _NUTRITION_KEYWORDS):
+        expected.append("save_nutrition")
+    elif any(kw in resp_lower for kw in ("записал", "зафиксировал", "сохранил")):
+        if any(kw in msg_lower for kw in ("ел", "ела", "пил", "пила", "еда", "пицц", "бургер", "рулет", "суп")):
+            expected.append("save_nutrition")
+    if any(kw in msg_lower for kw in _WORKOUT_DONE_KEYWORDS):
+        expected.append("save_workout")
+    if any(kw in msg_lower for kw in _METRICS_KEYWORDS):
+        expected.append("save_metrics")
+
+    if expected:
+        try:
+            from bot.debug import notify_no_tools_called
+            await notify_no_tools_called(bot, chat_id, user_message, expected)
+        except Exception:
+            pass
+
 
 async def generate_agent_response(
     bot,
@@ -229,6 +494,8 @@ async def generate_agent_response(
     user_message: str,
     tg_id: int,
     tools: list[dict] = None,
+    model: str = None,
+    max_tokens: int = None,
 ) -> str:
     """
     Агентный цикл с Claude Tool Use:
@@ -242,12 +509,24 @@ async def generate_agent_response(
     5. Стримим финальный текстовый ответ
 
     Graceful degradation: если ошибка Tool Use — fallback на обычный стриминг.
-    """
-    if tools is None:
-        from ai.tools import ALL_TOOLS
-        tools = ALL_TOOLS
 
-    from ai.tool_executor import execute_tool_calls
+    Параметры model/max_tokens/tools могут быть переданы явно или прочитаны
+    из context (проставляется build_layered_context на основе tier/tags).
+    """
+    # ── Определяем tools, модель и лимит токенов ────────────────────────────
+    if tools is None:
+        # Контекст несёт уже отфильтрованный набор (tier-оптимизация)
+        context_tools = context.get("tools")
+        if context_tools is not None:
+            tools = context_tools
+        else:
+            from ai.tools import ALL_TOOLS
+            tools = ALL_TOOLS
+
+    if model is None:
+        model = context.get("model", MODEL)
+    if max_tokens is None:
+        max_tokens = context.get("max_tokens", MAX_TOKENS)
 
     async_client = get_async_client()
     system = context.get("system", "")
@@ -259,193 +538,39 @@ async def generate_agent_response(
     sent_msg = await bot.send_message(chat_id=chat_id, text="✍️")
     final_text = ""
 
-    # ── Трекинг расходов ──────────────────────────────────────────────────────
+    # ── Агентный цикл + пост-обработка ───────────────────────────────────────
     _t_start = time.monotonic()
-    _usage_total = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read": 0,
-        "cache_write": 0,
-    }
+
+    async def _on_tool_use(tool_name: str) -> None:
+        try:
+            await sent_msg.edit_text(_STATUS_RU.get(tool_name, "⚙️ Обрабатываю…"))
+        except Exception:
+            pass
 
     try:
-        for iteration in range(MAX_AGENT_ITERATIONS):
-            response = await async_client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=system,
-                tools=tools,
-                messages=messages,
-            )
+        final_text, _usage_total = await _run_agent_iterations(
+            async_client=async_client,
+            system=system,
+            messages=messages,
+            tools=tools,
+            max_iterations=MAX_AGENT_ITERATIONS,
+            tg_id=tg_id,
+            bot=bot,
+            chat_id=chat_id,
+            model=model,
+            max_tokens=max_tokens,
+            on_tool_use=_on_tool_use,
+        )
 
-            # Извлекаем текстовые блоки и tool_use блоки
-            text_blocks = [b for b in response.content if b.type == "text"]
-            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-
-            # Накапливаем токены по всем итерациям
-            if hasattr(response, "usage") and response.usage:
-                _usage_total["input_tokens"]  += getattr(response.usage, "input_tokens", 0)
-                _usage_total["output_tokens"] += getattr(response.usage, "output_tokens", 0)
-                _usage_total["cache_read"]    += getattr(response.usage, "cache_read_input_tokens", 0)
-                _usage_total["cache_write"]   += getattr(response.usage, "cache_creation_input_tokens", 0)
-
-            # Если нет tool_use — это финальный ответ
-            if not tool_use_blocks or response.stop_reason == "end_turn":
-                if text_blocks:
-                    final_text = "".join(b.text for b in text_blocks)
-                break
-
-            # Есть tool_use → выполняем и продолжаем цикл
-            tool_names = [t.name for t in tool_use_blocks]
-            logger.info(
-                f"[AGENT] iter={iteration+1} tools_called="
-                f"{tool_names} user={tg_id}"
-            )
-
-            # Прогресс-индикатор: показываем что именно делает бот
-            _STATUS_RU = {
-                "save_workout": "💾 Записываю тренировку…",
-                "save_metrics": "💾 Сохраняю метрики…",
-                "save_nutrition": "💾 Записываю питание…",
-                "save_exercise_result": "💾 Записываю упражнение…",
-                "set_personal_record": "🏆 Фиксирую рекорд…",
-                "update_athlete_card": "📝 Обновляю профиль…",
-                "get_weekly_stats": "📊 Загружаю статистику…",
-                "get_nutrition_history": "🥗 Загружаю историю питания…",
-                "get_personal_records": "🏆 Загружаю рекорды…",
-                "get_current_plan": "📋 Загружаю план…",
-                "get_user_profile": "👤 Загружаю профиль…",
-                "award_xp": "⚡ Начисляю XP…",
-                "save_episode": "🧠 Сохраняю в память…",
-            }
-            status_text = _STATUS_RU.get(tool_names[0], "⚙️ Обрабатываю…")
-            try:
-                await sent_msg.edit_text(status_text)
-            except Exception:
-                pass
-
-            # Добавляем ответ Claude с tool_use в историю
-            messages.append({"role": "assistant", "content": response.content})
-
-            # Выполняем инструменты
-            tool_results = await execute_tool_calls(
-                tg_id=tg_id,
-                tool_uses=tool_use_blocks,
-                bot=bot,
-                chat_id=chat_id,
-            )
-
-            # Логируем результаты инструментов
-            for tr in tool_results:
-                if isinstance(tr, dict) and tr.get("type") == "tool_result":
-                    content_preview = str(tr.get("content", ""))[:200]
-                    logger.debug(
-                        f"[AGENT] tool_result id={tr.get('tool_use_id', '?')[:8]}… "
-                        f"content={content_preview}"
-                    )
-
-            # Добавляем результаты инструментов
-            messages.append({
-                "role": "user",
-                "content": tool_results,
-            })
-
-        # Стримим/показываем финальный ответ
         if final_text:
-            # Разбиваем на чанки для эффекта стриминга
-            chunk_size = STREAM_UPDATE_EVERY
-            displayed = 0
-            while displayed < len(final_text):
-                end = min(displayed + chunk_size, len(final_text))
-                try:
-                    if end < len(final_text):
-                        await sent_msg.edit_text(final_text[:end] + " ▍")
-                    else:
-                        await sent_msg.edit_text(final_text)
-                except Exception:
-                    pass
-                displayed = end
-
-        elif not final_text:
+            await _stream_response(sent_msg, final_text)
+        else:
             # Fallback: нет финального текста
             await sent_msg.edit_text("✅ Готово.")
             final_text = "✅ Готово."
 
-        # ── Логирование расходов + сноска в сообщении ─────────────────────────
-        try:
-            from db.queries.usage import log_usage, calc_cost
-            from db.queries.user import get_user
-
-            _elapsed = time.monotonic() - _t_start
-            _user_db = get_user(tg_id)
-            _user_db_id = _user_db["id"] if _user_db else tg_id
-
-            _cost = log_usage(
-                user_id=_user_db_id,
-                model=MODEL,
-                input_tokens=_usage_total["input_tokens"],
-                output_tokens=_usage_total["output_tokens"],
-                cache_read=_usage_total["cache_read"],
-                cache_write=_usage_total["cache_write"],
-                response_time_sec=_elapsed,
-                call_type="agent",
-            )
-
-            # Сноска: время ответа + стоимость
-            _footnote = (
-                f"\n\n<blockquote>⏱ {_elapsed:.1f}с  ·  ${_cost:.4f}</blockquote>"
-            )
-            _full_msg = html.escape(final_text) + _footnote
-            try:
-                await sent_msg.edit_text(_full_msg, parse_mode="HTML")
-            except Exception:
-                pass  # если сообщение уже удалено или слишком длинное
-
-        except Exception as _e:
-            logger.debug(f"[USAGE] Footnote skipped: {_e}")
-
-        # Детектируем случай «сообщение о еде/тренировке, но tools не вызваны» (Фаза 14)
-        # Расширенные keywords: добавлены украинские/разговорные варианты (сьел, скушал и т.д.)
-        _NUTRITION_KEYWORDS = (
-            "съел", "сьел", "поел", "скушал", "кушал", "покушал",
-            "питался", "обед", "завтрак", "ужин", "перекус",
-            "выпил", "ккал", "калори", "питание", "кбжу",
-        )
-        # Только прошедшее время / завершённые тренировки — убираем «тренировка»
-        # чтобы не срабатывать на разговоры о планировании («буду тренироваться»)
-        _WORKOUT_DONE_KEYWORDS = (
-            "потренировался", "потренировалась", "занимался", "занималась",
-            "тренил", "тренанулся", "отжался", "отжимался",
-            "приседал", "подтянулся", "выполнил тренировку",
-            "закончил тренировку", "сделал тренировку",
-        )
-        _METRICS_KEYWORDS = ("поспал", "поспала", "сон", "вешу", "вес ")
-        all_tools_called_in_session = any(
-            (b.type == "tool_use")
-            for msg in messages
-            if isinstance(msg, dict) and msg.get("role") == "assistant"
-            for b in (msg.get("content") if isinstance(msg.get("content"), list) else [])
-        )
-        if not all_tools_called_in_session and final_text:
-            msg_lower = user_message.lower()
-            resp_lower = final_text.lower()
-            expected: list[str] = []
-            if any(kw in msg_lower for kw in _NUTRITION_KEYWORDS):
-                expected.append("save_nutrition")
-            # Дополнительно: бот написал «записал» без реального tool call — hallucination
-            elif any(kw in resp_lower for kw in ("записал", "зафиксировал", "сохранил")):
-                if any(kw in msg_lower for kw in ("ел", "ела", "пил", "пила", "еда", "пицц", "бургер", "рулет", "суп")):
-                    expected.append("save_nutrition")
-            if any(kw in msg_lower for kw in _WORKOUT_DONE_KEYWORDS):
-                expected.append("save_workout")
-            if any(kw in msg_lower for kw in _METRICS_KEYWORDS):
-                expected.append("save_metrics")
-            if expected:
-                try:
-                    from bot.debug import notify_no_tools_called
-                    await notify_no_tools_called(bot, chat_id, user_message, expected)
-                except Exception:
-                    pass
+        await _log_usage_footnote(sent_msg, tg_id, model, _usage_total, _t_start, final_text)
+        await _detect_hallucination(bot, chat_id, user_message, final_text, messages)
 
     except anthropic.APIStatusError as e:
         logger.error(f"[AGENT] API error {e.status_code}: {e.message}")

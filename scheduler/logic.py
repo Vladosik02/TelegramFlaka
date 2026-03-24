@@ -1,8 +1,15 @@
 """
 scheduler/logic.py — Логика плановых сообщений (без APScheduler деталей).
+
+V2 Чек-ины (без AI для шаблонных сообщений):
+  09:00  Утро    — сон + самочувствие (кнопки)
+  12:30  День    — еда (текст→AI→КБЖУ) + напоминание о тренировке
+  16:00  Вечер   — тренировка (кнопки) + еда (текст→AI→КБЖУ, накопление)
+  23:00  Ночь    — тренировка (если не было) + еда + мини-итог дня
 """
 import logging
 import datetime
+import json
 import random
 from telegram import Bot
 from telegram.ext import Application
@@ -10,18 +17,21 @@ from telegram.ext import Application
 from db.queries.user import get_user
 from db.queries.context import get_or_create_checkin, update_checkin, get_pending_reminders, mark_reminder_sent
 from db.queries.stats import save_weekly_summary
-from db.queries.workouts import get_weekly_stats, get_streak, get_workouts_range, get_metrics_range
-from ai.context_builder import (
-    build_morning_context, build_afternoon_context,
-    build_evening_context, build_weekly_report_context
-)
-from ai.client import generate_scheduled_message, generate_scheduled_agent_message
+from db.queries.workouts import get_weekly_stats, get_streak, get_workouts_range, get_metrics_range, get_today_workout
+from db.queries.nutrition import get_today_nutrition
+from ai.context_builder import build_weekly_report_context
+from ai.client import generate_scheduled_agent_message
 from db.writer import save_ai_response
 from db.queries.memory import upsert_intelligence, append_observation
-from bot.keyboards import kb_morning_ready, kb_workout_done, kb_evening_confirm, kb_reminder
+from bot.keyboards import (
+    kb_checkin_sleep, kb_checkin_wellbeing,
+    kb_checkin_workout_done, kb_checkin_food_skip,
+    kb_reminder,
+)
 from config import (
     SCHEDULE_LIGHT_MORNING_WINDOW, SCHEDULE_LIGHT_AFTERNOON_WINDOW,
-    SILENCE_AFTER_DAYS, SOFT_START_DAYS
+    SILENCE_AFTER_DAYS, SOFT_START_DAYS,
+    MORNING_FACTS, HABIT_FACTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,7 +64,29 @@ def _is_soft_start(user: dict) -> bool:
     return delta >= SOFT_START_DAYS
 
 
+def _get_today_plan_workout(user_id: int) -> dict | None:
+    """Возвращает тренировку из активного плана на сегодня или None."""
+    from db.queries.training_plan import get_active_plan
+    plan = get_active_plan(user_id)
+    if not plan:
+        return None
+    today_str = datetime.date.today().isoformat()
+    try:
+        days = json.loads(plan["plan_json"])
+        for day in days:
+            if day.get("date") == today_str:
+                return day
+    except Exception:
+        pass
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# УТРЕННИЙ ЧЕК-ИН (09:00) — сон + самочувствие
+# ═══════════════════════════════════════════════════════════════════════════
+
 async def send_morning_checkin(bot: Bot, telegram_id: int) -> None:
+    """Шаг 1: приветствие + факт + вопрос о сне (кнопки)."""
     user = get_user(telegram_id)
     if not user or not user["active"]:
         return
@@ -62,66 +94,199 @@ async def send_morning_checkin(bot: Bot, telegram_id: int) -> None:
         logger.info(f"Silencing {telegram_id} — inactive too long")
         return
 
-    context = build_morning_context(telegram_id)
-    if not context:
-        return
+    name = user.get("name") or "Атлет"
+    streak = get_streak(user["id"])
+    fact = random.choice(MORNING_FACTS)
 
-    text = await generate_scheduled_agent_message(bot, telegram_id, context, telegram_id)
+    streak_text = f"  Стрик: {streak} дн." if streak > 0 else ""
+    text = (
+        f"Доброе утро, {name}!{streak_text}\n\n"
+        f"💡 {fact}\n\n"
+        f"Сколько часов спал сегодня?"
+    )
     await bot.send_message(
         chat_id=telegram_id,
         text=text,
-        reply_markup=kb_morning_ready()
+        reply_markup=kb_checkin_sleep(),
     )
-    save_ai_response(telegram_id, text)
-
-    # Создать запись чек-ина
     today = datetime.date.today().isoformat()
     get_or_create_checkin(user["id"], today, "morning")
-    logger.info(f"Morning checkin sent to {telegram_id}")
+    logger.info(f"[CHECKIN] Morning sent to {telegram_id}")
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ДНЕВНОЙ ЧЕК-ИН (12:30) — еда + напоминание о тренировке
+# ═══════════════════════════════════════════════════════════════════════════
 
 async def send_afternoon_checkin(bot: Bot, telegram_id: int) -> None:
+    """Вопрос о еде (свободный текст) + факт о привычках."""
     user = get_user(telegram_id)
     if not user or not user["active"]:
         return
 
-    context = build_afternoon_context(telegram_id)
-    if not context:
-        return
+    today = datetime.date.today()
+    day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    day_name = day_names[today.weekday()]
+    date_str = today.strftime("%d.%m")
+    fact = random.choice(HABIT_FACTS)
 
-    text = await generate_scheduled_agent_message(bot, telegram_id, context, telegram_id)
+    text = (
+        f"📅 {day_name}, {date_str}\n\n"
+        f"Что ел сегодня? Напиши что было на завтрак/обед.\n\n"
+        f"⚠️ {fact}"
+    )
     await bot.send_message(
         chat_id=telegram_id,
         text=text,
-        reply_markup=kb_workout_done()
+        reply_markup=kb_checkin_food_skip(),
     )
-    save_ai_response(telegram_id, text)
+    # Ставим флаг ожидания текста о еде
+    from bot.handlers import _AWAITING_FOOD
+    _AWAITING_FOOD[telegram_id] = "afternoon"
+    get_or_create_checkin(user["id"], today.isoformat(), "afternoon")
+    logger.info(f"[CHECKIN] Afternoon sent to {telegram_id}")
 
-    today = datetime.date.today().isoformat()
-    get_or_create_checkin(user["id"], today, "afternoon")
-    logger.info(f"Afternoon checkin sent to {telegram_id}")
 
+async def send_afternoon_workout_reminder(bot: Bot, telegram_id: int, user_id: int) -> None:
+    """Отправляет напоминание о тренировке после записи еды (шаг 2 дневного чек-ина)."""
+    plan_workout = _get_today_plan_workout(user_id)
+    if not plan_workout:
+        return
+    wtype = plan_workout.get("type")
+    if wtype in ("rest", "recovery", None):
+        await bot.send_message(
+            chat_id=telegram_id,
+            text="🌿 Сегодня день отдыха по плану. Отдыхай!",
+        )
+        return
+    label = plan_workout.get("label") or plan_workout.get("type") or "тренировка"
+    exercises = plan_workout.get("exercises") or []
+    ex_lines = []
+    for ex in exercises[:5]:
+        parts = [f"• {ex.get('name', '?')}"]
+        if ex.get("sets") and ex.get("reps"):
+            parts.append(f"{ex['sets']}×{ex['reps']}")
+        if ex.get("weight_kg_target"):
+            parts.append(f"@ {ex['weight_kg_target']} кг")
+        ex_lines.append(" ".join(parts))
+    ex_text = "\n".join(ex_lines) if ex_lines else ""
+    text = f"🏋️ Сегодня по плану: {label}"
+    if ex_text:
+        text += f"\n\n{ex_text}"
+    text += "\n\nУдачной тренировки!"
+    await bot.send_message(chat_id=telegram_id, text=text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ВЕЧЕРНИЙ ЧЕК-ИН (16:00) — тренировка + еда
+# ═══════════════════════════════════════════════════════════════════════════
 
 async def send_evening_checkin(bot: Bot, telegram_id: int) -> None:
+    """Шаг 1: сделал тренировку? (кнопки)."""
     user = get_user(telegram_id)
     if not user or not user["active"]:
         return
 
-    context = build_evening_context(telegram_id)
-    if not context:
-        return
-
-    text = await generate_scheduled_agent_message(bot, telegram_id, context, telegram_id)
+    text = "Как прошёл день? Сделал тренировку? 💪"
     await bot.send_message(
         chat_id=telegram_id,
         text=text,
-        reply_markup=kb_evening_confirm()
+        reply_markup=kb_checkin_workout_done(),
     )
-    save_ai_response(telegram_id, text)
-
+    from bot.handlers import _CHECKIN_SLOT
+    _CHECKIN_SLOT[telegram_id] = "evening"
     today = datetime.date.today().isoformat()
     get_or_create_checkin(user["id"], today, "evening")
-    logger.info(f"Evening checkin sent to {telegram_id}")
+    logger.info(f"[CHECKIN] Evening sent to {telegram_id}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# НОЧНОЙ ЧЕК-ИН (23:00) — итог дня
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def send_night_checkin(bot: Bot, telegram_id: int) -> None:
+    """
+    Шаг 1: если тренировка не зафиксирована — спрашиваем.
+    Если уже есть — сразу спрашиваем про еду.
+    """
+    user = get_user(telegram_id)
+    if not user or not user["active"]:
+        return
+    if _should_silence(user):
+        return
+
+    today_workout = get_today_workout(user["id"])
+    workout_done = bool(today_workout and today_workout.get("completed"))
+
+    if not workout_done:
+        # Спрашиваем про тренировку
+        text = "🌙 Вечер! Тренировался сегодня?"
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=text,
+            reply_markup=kb_checkin_workout_done(),
+        )
+        from bot.handlers import _CHECKIN_SLOT
+        _CHECKIN_SLOT[telegram_id] = "night"
+    else:
+        # Тренировка уже записана — сразу про еду
+        text = "🌙 Вечер! Что ел за ужин/вечер?"
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=text,
+            reply_markup=kb_checkin_food_skip(),
+        )
+        from bot.handlers import _AWAITING_FOOD
+        _AWAITING_FOOD[telegram_id] = "night"
+
+    today = datetime.date.today().isoformat()
+    get_or_create_checkin(user["id"], today, "night")
+    logger.info(f"[CHECKIN] Night sent to {telegram_id}")
+
+
+async def send_night_summary(bot: Bot, telegram_id: int, user_id: int) -> None:
+    """Мини-итог дня (шаблон, без AI). Отправляется после ответов на ночной чек-ин."""
+    today_workout = get_today_workout(user_id)
+    nutrition = get_today_nutrition(user_id)
+    metrics_list = get_metrics_range(user_id, days=1)
+    metrics = metrics_list[0] if metrics_list else None
+
+    parts = ["📊 Итог дня:"]
+    if nutrition and nutrition.get("calories"):
+        n = nutrition
+        parts.append(
+            f"🍽 {n['calories']} ккал"
+            f" (Б{n.get('protein_g', 0)} Ж{n.get('fat_g', 0)} У{n.get('carbs_g', 0)})"
+        )
+    else:
+        parts.append("🍽 Питание не записано")
+
+    if today_workout and today_workout.get("completed"):
+        parts.append("✅ Тренировка выполнена")
+    else:
+        parts.append("❌ Тренировка не выполнена")
+
+    if metrics and metrics.get("sleep_hours"):
+        parts.append(f"😴 Сон: {metrics['sleep_hours']}ч")
+
+    # Контекстный мини-урок (teach moment)
+    from scheduler.teach_moments import select_teach_moment
+    from db.queries.memory import get_l2_brief
+    l2 = get_l2_brief(user_id)
+    teach = select_teach_moment(
+        user_id=user_id,
+        workout=today_workout,
+        nutrition=nutrition,
+        metrics=metrics,
+        goal_calories=l2.get("daily_calories") if l2 else None,
+        goal_protein=l2.get("protein_g") if l2 else None,
+    )
+    if teach:
+        parts.append(f"\n💡 {teach}")
+
+    parts.append("\nСпокойной ночи! 🌙")
+
+    await bot.send_message(chat_id=telegram_id, text="\n".join(parts))
 
 
 async def send_weekly_report(bot: Bot, telegram_id: int) -> None:
@@ -133,7 +298,14 @@ async def send_weekly_report(bot: Bot, telegram_id: int) -> None:
     if not context:
         return
 
-    text = await generate_scheduled_agent_message(bot, telegram_id, context, telegram_id)
+    # Фаза 17 — передаём только 5 read-инструментов вместо ALL_TOOLS (13).
+    # Weekly report только читает статистику и сохраняет инсайты, write-tools не нужны.
+    # Экономия: ~2800 токенов input per call (3502 → ~700 tok на tool-описания).
+    from ai.tools import _TOOLS_WEEKLY_REPORT
+    text = await generate_scheduled_agent_message(
+        bot, telegram_id, context, telegram_id,
+        tools=_TOOLS_WEEKLY_REPORT,
+    )
     await bot.send_message(chat_id=telegram_id, text=text)
     save_ai_response(telegram_id, text)
 
@@ -201,6 +373,14 @@ async def broadcast_evening(bot: Bot) -> None:
             logger.error(f"Evening broadcast failed for {user['telegram_id']}: {e}")
 
 
+async def broadcast_night(bot: Bot) -> None:
+    for user in _get_all_active_users():
+        try:
+            await send_night_checkin(bot, user["telegram_id"])
+        except Exception as e:
+            logger.error(f"Night broadcast failed for {user['telegram_id']}: {e}")
+
+
 async def broadcast_weekly(bot: Bot) -> None:
     for user in _get_all_active_users():
         try:
@@ -252,7 +432,7 @@ def _parse_l4_response(text: str) -> dict:
 async def update_l4_for_user(uid: int, telegram_id: int) -> None:
     """Генерирует L4 Intelligence дайджест для одного пользователя."""
     from ai.client import get_client
-    from config import MODEL
+    from config import MODEL_SCHEDULED as MODEL  # Haiku: простой структурированный вывод, Sonnet избыточен
 
     user = get_user(telegram_id)
     if not user:
@@ -460,7 +640,7 @@ async def generate_daily_summary_for_user(uid: int, telegram_id: int) -> None:
     Вызывается из scheduler после вечернего чек-ина (~23:00).
     """
     from ai.client import get_client
-    from config import MODEL
+    from config import MODEL_SCHEDULED as MODEL  # Haiku: вывод 2-3 предложения, Sonnet избыточен (4× дороже)
     from db.queries.workouts import get_today_workout, get_metrics_range
     from db.queries.nutrition import get_today_nutrition
     from db.queries.memory import get_l2_brief
@@ -602,7 +782,7 @@ async def generate_monthly_summary_for_user(uid: int, telegram_id: int) -> None:
     Если данных за месяц нет — пропускает без ошибки.
     """
     from ai.client import get_client
-    from config import MODEL
+    from config import MODEL_SCHEDULED as MODEL  # Haiku: структурированный вывод 3-4 предложения, Sonnet избыточен
     from db.queries.stats import get_monthly_stats
     from db.queries.monthly_summary import upsert_monthly_summary, get_month_summary
     from db.queries.memory import get_l2_brief
@@ -961,6 +1141,12 @@ async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None
     if l3.get("current_program"): train_parts.append(f"Текущая программа: {l3['current_program']}")
     training_prefs = "\n".join(train_parts) if train_parts else "нет данных"
 
+    # Место тренировок и оборудование
+    loc_map = {"home": "дома", "gym": "в зале", "outdoor": "на улице", "flexible": "гибко"}
+    training_location = loc_map.get(user.get("training_location", "flexible"), "гибко")
+    equipment_list = l3.get("equipment") or []
+    equipment_str = ", ".join(equipment_list) if equipment_list else "только вес тела"
+
     # Питание
     nut_parts = []
     if l2.get("daily_calories"): nut_parts.append(f"{l2['daily_calories']} ккал")
@@ -1050,6 +1236,8 @@ async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None
         streak=streak,
         physical_data=physical_data,
         training_prefs=training_prefs,
+        training_location=training_location,
+        equipment=equipment_str,
         nutrition_data=nutrition_data,
         health_data=health_data,
         avg_sleep=f"{avg_sleep} ч" if avg_sleep else "нет данных",
@@ -1220,52 +1408,103 @@ async def send_pre_workout_reminder(bot: Bot, telegram_id: int) -> None:
     if ai_note:
         lines.append(f"\n💬 _{ai_note}_")
 
-    # Подсказки прогрессии (Фаза 15.2)
+    # Прогноз тренировки + адаптивная модификация
+    adaptation = None
+    use_adapt_keyboard = False
     try:
-        from db.queries.exercises import get_exercise_last_result
-        overload_lines = []
-        for ex in exercises[:3]:
-            name = ex.get("name", "")
-            if not name:
-                continue
-            target_w = ex.get("weight_kg_target")
-            last = get_exercise_last_result(user["id"], name)
-            if not last:
-                continue
-            lw = last.get("weight_kg")
-            lr = last.get("reps")
-            ls = last.get("sets")
-            last_str_parts = []
-            if ls and lr:
-                last_str_parts.append(f"{ls}×{lr}")
-            if lw:
-                last_str_parts.append(f"@ {lw} кг")
-            if not last_str_parts:
-                continue
-            hint = ""
-            if lw and target_w and lw >= float(target_w):
-                hint = f" → {round(lw + 2.5, 1)} кг 💪"
-            elif lw and target_w:
-                hint = f" → цель {target_w} кг"
-            elif lr:
-                hint = f" → +1 повтор"
-            if hint:
-                overload_lines.append(f"  _{name}: {' '.join(last_str_parts)}{hint}_")
-        if overload_lines:
-            lines.append("\n📈 *Прогрессия:*\n" + "\n".join(overload_lines))
-    except Exception as oe:
-        logger.debug(f"[PRE_WORKOUT] overload hints failed: {oe}")
+        from scheduler.prediction import build_workout_prediction, format_prediction_block
+        from scheduler.adaptation import (
+            compute_session_adaptation,
+            apply_adaptation_to_prediction,
+            format_adaptation_block,
+            ADAPT_NORMAL,
+        )
+
+        prediction = build_workout_prediction(user["id"])
+        if prediction and prediction.get("exercises"):
+            # Вычисляем адаптацию на основе recovery + сон + энергия + мезоцикл
+            recovery_score = None
+            if prediction.get("recovery"):
+                recovery_score = prediction["recovery"].get("score")
+
+            adaptation = compute_session_adaptation(
+                recovery_score=recovery_score,
+                sleep=prediction.get("sleep"),
+                energy=prediction.get("energy"),
+                meso_phase=prediction.get("meso_phase"),
+            )
+
+            if adaptation["type"] != ADAPT_NORMAL:
+                # Применяем адаптацию к прогнозу
+                adapted = apply_adaptation_to_prediction(prediction, adaptation)
+                adapt_block = format_adaptation_block(adapted)
+                if adapt_block:
+                    lines.append(adapt_block)
+                    use_adapt_keyboard = True
+                    logger.info(
+                        f"[ADAPT] Suggested {adaptation['type']} for {telegram_id}: "
+                        f"recovery={recovery_score}, sleep={prediction.get('sleep')}, "
+                        f"energy={prediction.get('energy')}"
+                    )
+            else:
+                # Без адаптации — показываем стандартный прогноз
+                pred_block = format_prediction_block(prediction)
+                if pred_block:
+                    lines.append(pred_block)
+    except Exception as pe:
+        logger.debug(f"[PRE_WORKOUT] prediction/adaptation failed: {pe}")
+        # Fallback: старая логика прогрессии
+        try:
+            from db.queries.exercises import get_exercise_last_result
+            overload_lines = []
+            for ex in exercises[:3]:
+                name = ex.get("name", "")
+                if not name:
+                    continue
+                target_w = ex.get("weight_kg_target")
+                last = get_exercise_last_result(user["id"], name)
+                if not last:
+                    continue
+                lw = last.get("weight_kg")
+                lr = last.get("reps")
+                ls = last.get("sets")
+                last_str_parts = []
+                if ls and lr:
+                    last_str_parts.append(f"{ls}×{lr}")
+                if lw:
+                    last_str_parts.append(f"@ {lw} кг")
+                if not last_str_parts:
+                    continue
+                hint = ""
+                if lw and target_w and lw >= float(target_w):
+                    hint = f" → {round(lw + 2.5, 1)} кг 💪"
+                elif lw and target_w:
+                    hint = f" → цель {target_w} кг"
+                elif lr:
+                    hint = f" → +1 повтор"
+                if hint:
+                    overload_lines.append(f"  _{name}: {' '.join(last_str_parts)}{hint}_")
+            if overload_lines:
+                lines.append("\n📈 *Прогрессия:*\n" + "\n".join(overload_lines))
+        except Exception as oe:
+            logger.debug(f"[PRE_WORKOUT] overload hints fallback failed: {oe}")
 
     lines.append("\nНапиши мне когда закончишь 💪")
     text = "\n".join(lines)
 
     try:
-        from bot.keyboards import kb_workout_done as kb_wf_done
+        if use_adapt_keyboard and adaptation:
+            from bot.keyboards import kb_session_adapt
+            reply_markup = kb_session_adapt(adaptation["type"])
+        else:
+            from bot.keyboards import kb_workout_done as kb_wf_done
+            reply_markup = kb_wf_done()
+
         await bot.send_message(
             chat_id=telegram_id,
             text=text,
             parse_mode="Markdown",
-            reply_markup=kb_wf_done(),
+            reply_markup=reply_markup,
         )
         logger.info(f"[PRE_WORKOUT] Reminder sent to {telegram_id} for {label}")
     except Exception as e:

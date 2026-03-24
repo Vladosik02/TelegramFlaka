@@ -236,7 +236,7 @@ def update_exercise_score(user_id: int, exercise: str, score: float,
 
 
 def get_l3_brief(user_id: int) -> dict:
-    """L3 brief: preferred_days, preferred_time, avg_session_min, current_program."""
+    """L3 brief: preferred_days, preferred_time, avg_session_min, current_program, equipment."""
     row = get_training_intel(user_id)
     if not row:
         return {}
@@ -245,11 +245,12 @@ def get_l3_brief(user_id: int) -> dict:
         "preferred_time":  row.get("preferred_time", "flexible"),
         "avg_session_min": row.get("avg_session_min", 45),
         "current_program": row.get("current_program"),
+        "equipment":       _json_get(row, "equipment", []),
     }
 
 
 def get_l3_deep(user_id: int) -> dict:
-    """L3 deep: + SCORE-таблица упражнений, avoided_exercises, notes."""
+    """L3 deep: + SCORE-таблица упражнений, avoided_exercises, notes, equipment."""
     row = get_training_intel(user_id)
     if not row:
         return {}
@@ -267,6 +268,7 @@ def get_l3_deep(user_id: int) -> dict:
         "notable_exercises": notable,   # только notable, экономим токены
         "avoided_exercises": _json_get(row, "avoided_exercises", []),
         "training_notes":   row.get("training_notes"),
+        "equipment":        _json_get(row, "equipment", []),
     }
 
 

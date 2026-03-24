@@ -59,6 +59,29 @@ def main() -> None:
         logger.error(f"❌ Критическая ошибка при инициализации БД: {e}")
         return
 
+    # 1.5. Startup-валидация: все tools из ALL_TOOLS должны иметь обработчик в executor
+    try:
+        from ai.tools import ALL_TOOLS
+        from ai.tool_executor import _DISPATCH
+        schema_tools = {t["name"] for t in ALL_TOOLS}
+        handled_tools = set(_DISPATCH.keys())
+        missing_handlers = schema_tools - handled_tools
+        unknown_handlers = handled_tools - schema_tools
+        if missing_handlers or unknown_handlers:
+            logger.error(
+                f"❌ Tool mismatch! Нет обработчиков для: {missing_handlers}. "
+                f"Лишние обработчики (нет в схеме): {unknown_handlers}"
+            )
+            raise RuntimeError(
+                f"Tool executor mismatch: missing={missing_handlers}, extra={unknown_handlers}"
+            )
+        logger.info(f"✅ Tool validation passed: {len(schema_tools)} tools OK")
+    except RuntimeError:
+        return
+    except Exception as e:
+        logger.error(f"❌ Tool validation error: {e}")
+        return
+
     # 2. Создаём Application с хуком post_init
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 

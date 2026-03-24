@@ -43,4 +43,4 @@ def _cleanup_old_backups(keep_days: int = 90) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     path = run_backup()
-    print(f"Backup done: {path}")
+    logger.info(f"Backup done: {path}")

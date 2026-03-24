@@ -222,26 +222,24 @@ async def _apply_stop(update, ctx, tg, days: int) -> None:
 
 # ─── /stats ──────────────────────────────────────────────────────────────────
 
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    tg = update.effective_user
-    user = get_user(tg.id)
-    if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
-        return
+def _build_stats_text(user: dict) -> str:
+    """Собирает текст статистики для /stats и callback action='stats'.
 
+    Вынесено в отдельную функцию чтобы не дублировать логику между
+    cmd_stats (bot/commands.py) и handle_callback action='stats' (bot/handlers.py).
+    """
     weekly = get_weekly_stats(user["id"])
     alltime = get_all_time_stats(user["id"])
     streak = get_streak(user["id"])
     mode = get_trainer_mode()
     mode_emoji = "🔥" if mode == "MAX" else "🌿"
 
-    # Прогресс-бар тренировок недели
     done = weekly['workouts_done']
     total = max(weekly['workouts_total'], 1)
     filled = min(10, round(done / total * 10))
     bar = "█" * filled + "░" * (10 - filled)
 
-    text = (
+    return (
         f"📊 *Статистика {user['name'] or 'атлета'}*\n"
         "━━━━━━━━━━━━━━━━━\n"
         "*Эта неделя:*\n"
@@ -258,6 +256,15 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "━━━━━━━━━━━━━━━━━\n"
         f"{mode_emoji} Режим сегодня: *{mode}*"
     )
+
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    tg = update.effective_user
+    user = get_user(tg.id)
+    if not user:
+        await update.message.reply_text("Нет данных. Напиши /start")
+        return
+    text = _build_stats_text(user)
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb_stats_quick())
 
 

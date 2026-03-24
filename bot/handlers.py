@@ -29,6 +29,7 @@ from bot.keyboards import (
     kb_main_menu, kb_back_to_menu,
     kb_workout_duration, kb_workout_rpe, kb_workout_feeling, kb_workout_comment,
     kb_workout_done,
+    kb_checkin_wellbeing, kb_checkin_workout_done, kb_checkin_food_skip,
 )
 from config import (
     HEALTH_KEYWORDS, OPENAI_API_KEY,
@@ -36,6 +37,12 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Чек-ин V2: состояние ожидания еды по telegram_id → slot (afternoon/evening/night)
+# Заполняется scheduler'ом при отправке вопроса о еде, очищается при ответе
+_AWAITING_FOOD: dict[int, str] = {}
+# Чек-ин V2: текущий слот чек-ина (evening/night) для определения контекста
+_CHECKIN_SLOT: dict[int, str] = {}
 
 GOAL_MAP = {
     "goal_lose": "похудеть",
@@ -480,6 +487,18 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         save_user_message(tg.id, text)
         return
 
+    # ── Чек-ин V2: ожидание текста о еде ──────────────────────────────────────
+    checkin_flow = ctx.user_data.get("checkin_flow", {})
+    if checkin_flow.get("step") == "awaiting_food":
+        await _handle_checkin_food_text(update, ctx, tg, text)
+        return
+    # Fallback: scheduler мог поставить ожидание через _AWAITING_FOOD
+    if tg.id in _AWAITING_FOOD:
+        slot = _AWAITING_FOOD.pop(tg.id)
+        ctx.user_data["checkin_flow"] = {"step": "awaiting_food", "slot": slot}
+        await _handle_checkin_food_text(update, ctx, tg, text)
+        return
+
     # ── Guided Workout Flow: обработка custom duration или текстового комментария ─
     wf = ctx.user_data.get("workout_flow", {})
     if wf.get("awaiting_custom_duration"):
@@ -565,7 +584,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         except Exception as e:
             logger.error(f"[WF] save from text failed for {tg.id}: {e}")
             await update.message.reply_text("❌ Не удалось сохранить. Попробуй ещё раз.")
-        ctx.user_data.pop("workout_flow", None)
+        finally:
+            # Гарантированно сбрасываем состояние flow в любом случае
+            ctx.user_data.pop("workout_flow", None)
         return
 
     # ── Обработка ввода (парсинг + AI-ответ) ─────────────────────────────────
@@ -673,76 +694,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # ── Утренний чек-ин: Готов / Дай время — Фаза 13.1 ──────────────────────
-    if data == "morning_ready":
-        user = get_user(tg.id)
-        if not user:
-            await query.edit_message_text("Напиши /start чтобы начать.")
-            return
-        from db.queries.training_plan import get_active_plan
-        import json as _json
-        plan = get_active_plan(user["id"])
-        today_str = datetime.date.today().isoformat()
-        today_workout = None
-        if plan:
-            try:
-                days = _json.loads(plan["plan_json"])
-                for day in days:
-                    if day.get("date") == today_str:
-                        today_workout = day
-                        break
-            except Exception as e:
-                logger.warning(f"[MORNING_READY] Plan parse error for {tg.id}: {e}")
-
-        if today_workout and today_workout.get("type") not in ("rest", "recovery", None):
-            exercises = today_workout.get("exercises") or []
-            ex_lines = []
-            for ex in exercises:
-                parts = [f"• {ex.get('name', '?')}"]
-                if ex.get("sets") and ex.get("reps"):
-                    parts.append(f"{ex['sets']}×{ex['reps']}")
-                if ex.get("weight_kg_target"):
-                    parts.append(f"@ {ex['weight_kg_target']} кг")
-                if ex.get("note"):
-                    parts.append(f"_{ex['note']}_")
-                ex_lines.append(" ".join(parts))
-            ex_text = "\n".join(ex_lines) if ex_lines else "_Без детализации_"
-            label = today_workout.get("label") or today_workout.get("type") or "тренировка"
-            note = today_workout.get("ai_note", "")
-            note_text = f"\n\n💬 _{note}_" if note else ""
-            # Прогрессия (Фаза 15.2)
-            overload_text = _build_overload_hints(user["id"], exercises)
-            text = (
-                f"💪 *Сегодня: {label}*\n\n"
-                f"{ex_text}"
-                f"{overload_text}"
-                f"{note_text}\n\n"
-                "Когда закончишь — нажми «Сделал» 👇"
-            )
-            await query.edit_message_text(
-                text, parse_mode="Markdown", reply_markup=kb_workout_done()
-            )
-        elif today_workout and today_workout.get("type") in ("rest", "recovery"):
-            await query.edit_message_text(
-                "🌿 Сегодня *день отдыха* по плану.\n"
-                "Лёгкая прогулка или растяжка — идеально. Восстанавливайся! 💤",
-                parse_mode="Markdown"
-            )
-        else:
-            await query.edit_message_text(
-                "📋 Плана на сегодня пока нет.\n"
-                "Новый план генерируется каждое *воскресенье в 20:00*.\n"
-                "Хочешь составить прямо сейчас — напиши мне: _«составь план»_",
-                parse_mode="Markdown",
-                reply_markup=kb_back_to_menu()
-            )
-        return
-
-    if data == "morning_later":
-        await query.edit_message_text(
-            "😴 Хорошо, отдохни. Напомню позже.\n"
-            "Когда будешь готов — /plan покажет сегодняшнюю тренировку."
-        )
+    # ── Чек-ин V2: ci:* callbacks ────────────────────────────────────────────
+    if data.startswith("ci:"):
+        await _handle_checkin_callback(query, ctx, tg, data)
         return
 
     # ── Тренировка ────────────────────────────────────────────────────────────
@@ -818,18 +772,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # ── Интенсивность ─────────────────────────────────────────────────────────
-    if data.startswith("intensity_"):
-        val = int(data.split("_")[1])
-        await query.edit_message_text(
-            f"Интенсивность {val}/10. Записал. 📝"
-        )
-        return
-
-    # ── Энергия ───────────────────────────────────────────────────────────────
+    # ── Энергия (обратная совместимость — /today и пр.) ─────────────────────
     if data.startswith("energy_"):
         val = int(data.split("_")[1])
-        save_metrics_from_parsed = None  # lazy import
         from db.writer import save_metrics_from_parsed as smp
         smp(tg.id, {"energy": val})
         await query.edit_message_text(
@@ -840,6 +785,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     # ── Guided Workout Flow (wf:*) — Фаза 13.2 ───────────────────────────────
     if data.startswith("wf:"):
         await _handle_workout_flow(query, ctx, tg, data)
+        return
+
+    # ── Adaptive Session Modifier (adapt:*) ───────────────────────────────────
+    if data.startswith("adapt:"):
+        await _handle_adapt_callback(query, ctx, tg, data)
         return
 
     # ── Quick Meal Presets (meal:*) — Фаза 15.4 ──────────────────────────────
@@ -929,6 +879,158 @@ def _build_overload_hints(user_id: int, exercises: list) -> str:
     if not lines:
         return ""
     return "\n📈 *Прогрессия:*\n" + "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# ЧЕК-ИН V2 — callback и текстовые ответы
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def _handle_checkin_callback(query, ctx, tg, data: str) -> None:
+    """Обработка ci:* callback-ов от чек-инов V2."""
+    from db.writer import save_metrics_from_parsed
+    from db.queries.workouts import log_workout, get_today_workout
+    from db.queries.nutrition import add_nutrition_to_day
+    from config import get_trainer_mode
+
+    parts = data.split(":")
+    # ci:sleep:7, ci:well:4, ci:wk:done, ci:wk:no, ci:wk:skip, ci:food:skip
+    action = parts[1] if len(parts) > 1 else ""
+    value = parts[2] if len(parts) > 2 else ""
+
+    user = get_user(tg.id)
+    if not user:
+        await query.edit_message_text("Напиши /start чтобы начать.")
+        return
+
+    # ── Утро: сон ──────────────────────────────────────────────────────────
+    if action == "sleep":
+        hours = int(value)
+        save_metrics_from_parsed(tg.id, {"sleep_hours": float(hours)})
+        await query.edit_message_text(
+            f"😴 Записал: {hours}ч сна.\n\n"
+            f"Как самочувствие сейчас?",
+            reply_markup=kb_checkin_wellbeing(),
+        )
+        return
+
+    # ── Утро: самочувствие ─────────────────────────────────────────────────
+    if action == "well":
+        score = int(value)
+        save_metrics_from_parsed(tg.id, {"energy": score})
+        labels = {2: "Так себе", 3: "Нормально", 4: "Хорошо", 5: "Отлично"}
+        label = labels.get(score, "Ок")
+        await query.edit_message_text(
+            f"✅ {label}! Записал.\n\nОтличного дня, работаем! 💪"
+        )
+        return
+
+    # ── Тренировка: ci:wk:done / ci:wk:no / ci:wk:skip ───────────────────
+    if action == "wk":
+        # Определяем слот: вечер или ночь
+        checkin_slot = _CHECKIN_SLOT.pop(tg.id, "evening")
+
+        if value == "done":
+            # Записать тренировку как выполненную
+            today_str = datetime.date.today().isoformat()
+            mode = get_trainer_mode()
+            today_workout = get_today_workout(user["id"])
+            if not today_workout:
+                # Нет записи — создаём
+                log_workout(
+                    user_id=user["id"],
+                    date=today_str,
+                    mode=mode,
+                    workout_type="general",
+                    completed=True,
+                )
+            else:
+                # Есть запись — помечаем completed
+                from db.connection import get_connection
+                conn = get_connection()
+                conn.execute(
+                    "UPDATE workouts SET completed = 1 WHERE id = ?",
+                    (today_workout["id"],)
+                )
+                conn.commit()
+            await query.edit_message_text("✅ Тренировка записана! Молодец! 💪")
+        elif value == "no":
+            await query.edit_message_text("Ничего, бывает. Завтра наверстаем!")
+        elif value == "skip":
+            await query.edit_message_text("⏭ Пропуск записан. Отдых тоже важен.")
+
+        # Шаг 2: спрашиваем про еду
+        import asyncio
+        await asyncio.sleep(1)
+        await query.message.reply_text(
+            "Что ел сегодня?",
+            reply_markup=kb_checkin_food_skip(),
+        )
+        ctx.user_data["checkin_flow"] = {"step": "awaiting_food", "slot": checkin_slot}
+        _AWAITING_FOOD[tg.id] = checkin_slot
+        return
+
+    # ── Еда: пропуск ──────────────────────────────────────────────────────
+    if action == "food" and value == "skip":
+        slot = ctx.user_data.get("checkin_flow", {}).get("slot", "")
+        ctx.user_data.pop("checkin_flow", None)
+        await query.edit_message_text("👌 Ок, пропускаем.")
+
+        # Если ночной чек-ин — отправляем итог дня
+        if slot == "night":
+            from scheduler.logic import send_night_summary
+            await send_night_summary(query.message.bot, tg.id, user["id"])
+        # Если дневной — напоминаем о тренировке
+        elif slot == "afternoon":
+            from scheduler.logic import send_afternoon_workout_reminder
+            await send_afternoon_workout_reminder(query.message.bot, tg.id, user["id"])
+        return
+
+
+async def _handle_checkin_food_text(update, ctx, tg, text: str) -> None:
+    """
+    Обработка текстового ответа о еде в рамках checkin_flow.
+    Парсит через AI → записывает КБЖУ с накоплением.
+    """
+    from ai.client import parse_food_with_ai
+    from db.queries.nutrition import add_nutrition_to_day
+    from db.queries.user import get_user
+
+    user = get_user(tg.id)
+    if not user:
+        return
+
+    flow = ctx.user_data.get("checkin_flow", {})
+    slot = flow.get("slot", "")
+    ctx.user_data.pop("checkin_flow", None)
+    _AWAITING_FOOD.pop(tg.id, None)
+
+    # Парсим еду через Haiku
+    parsed = parse_food_with_ai(text)
+
+    if parsed:
+        add_nutrition_to_day(user["id"], **parsed)
+        cal = parsed.get("calories", 0)
+        p = parsed.get("protein_g", 0)
+        f = parsed.get("fat_g", 0)
+        c = parsed.get("carbs_g", 0)
+        notes = parsed.get("meal_notes", "")
+        await update.message.reply_text(
+            f"🍽 Записал: {notes}\n"
+            f"📊 {cal} ккал (Б{p} Ж{f} У{c})"
+        )
+    else:
+        await update.message.reply_text(
+            "👌 Ок, ничего не записываю."
+        )
+
+    # Действия после записи еды
+    if slot == "night":
+        from scheduler.logic import send_night_summary
+        await send_night_summary(update.message.bot, tg.id, user["id"])
+    elif slot == "afternoon":
+        from scheduler.logic import send_afternoon_workout_reminder
+        await send_afternoon_workout_reminder(update.message.bot, tg.id, user["id"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1140,35 +1242,9 @@ async def _handle_menu_callback(
         if not user:
             await query.answer("Нет данных. Напиши /start", show_alert=True)
             return
-        from db.queries.workouts import get_weekly_stats, get_streak
-        from db.queries.stats import get_all_time_stats
-        from config import get_trainer_mode
+        from bot.commands import _build_stats_text
         from bot.keyboards import kb_stats_quick
-        weekly = get_weekly_stats(user["id"])
-        alltime = get_all_time_stats(user["id"])
-        streak = get_streak(user["id"])
-        mode = get_trainer_mode()
-        mode_emoji = "🔥" if mode == "MAX" else "🌿"
-        done = weekly['workouts_done']
-        total = max(weekly['workouts_total'], 1)
-        filled = min(10, round(done / total * 10))
-        bar = "█" * filled + "░" * (10 - filled)
-        text = (
-            f"📊 *Статистика {user['name'] or 'атлета'}*\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "*Эта неделя:*\n"
-            f"`[{bar}]` {done}/{total} тренировок\n"
-            f"• Ср. интенсивность: *{weekly['avg_intensity']}/10*\n"
-            f"• Всего минут: *{weekly['total_minutes']}*\n"
-            f"• Ср. сон: *{weekly['avg_sleep']} ч*\n"
-            f"• Ср. энергия: *{weekly['avg_energy']}/5*\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "*За всё время:*\n"
-            f"• Тренировок: *{alltime['done_workouts']}*\n"
-            f"• Стрик: 🔥 *{streak} дней*\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            f"{mode_emoji} Режим сегодня: *{mode}*"
-        )
+        text = _build_stats_text(user)
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_stats_quick())
         return
 
@@ -1328,6 +1404,65 @@ async def _handle_menu_callback(
         return
 
     await query.answer("Неизвестное действие", show_alert=True)
+
+
+async def _handle_adapt_callback(query, ctx, tg, data: str) -> None:
+    """
+    Обработка кнопок адаптивной модификации тренировки (adapt:*).
+
+    Callbacks:
+      adapt:accept:deload  — принять deload-день
+      adapt:accept:light   — принять облегчённую
+      adapt:accept:boost   — принять усиленную
+      adapt:skip           — тренироваться по плану
+    """
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "accept" and len(parts) > 2:
+        adapt_type = parts[2]
+        labels = {
+            "deload": "🔴 Deload-день принят",
+            "light": "⚠️ Облегчённая тренировка принята",
+            "boost": "🔥 Усиленная тренировка принята",
+        }
+        label = labels.get(adapt_type, "✅ Адаптация принята")
+        tips = {
+            "deload": (
+                "Фокус на технике, −40% рабочего веса. "
+                "Слушай тело — если RPE > 6, снижай ещё."
+            ),
+            "light": (
+                "Держим веса, −1 подход. RPE до 7. "
+                "Лучше хорошая лёгкая тренировка, чем плохая тяжёлая."
+            ),
+            "boost": (
+                "Попробуй +2.5 кг на базовых. "
+                "Если RPE > 9 — не геройствуй, вернись к плану."
+            ),
+        }
+        tip = tips.get(adapt_type, "")
+
+        from bot.keyboards import kb_workout_done
+        await query.edit_message_text(
+            f"{label}\n\n{tip}\n\nНапиши мне когда закончишь 💪",
+            parse_mode="Markdown",
+            reply_markup=kb_workout_done(),
+        )
+        logger.info(f"[ADAPT] User {tg.id} accepted adaptation: {adapt_type}")
+
+    elif action == "skip":
+        from bot.keyboards import kb_workout_done
+        await query.edit_message_text(
+            "💪 Ок, работаем по полному плану. Удачи!\n\n"
+            "Напиши мне когда закончишь 💪",
+            parse_mode="Markdown",
+            reply_markup=kb_workout_done(),
+        )
+        logger.info(f"[ADAPT] User {tg.id} skipped adaptation, going full plan")
+
+    else:
+        await query.answer("Неизвестное действие", show_alert=True)
 
 
 async def _handle_meal_callback(query, ctx, tg, action: str) -> None:

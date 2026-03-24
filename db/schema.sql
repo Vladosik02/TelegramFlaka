@@ -425,6 +425,7 @@ CREATE INDEX IF NOT EXISTS idx_context_user             ON conversation_context(
 CREATE INDEX IF NOT EXISTS idx_reminders_user_status    ON reminders(user_id, status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_nutrition_log_user_date  ON nutrition_log(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_exercise_results_user    ON exercise_results(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_exercise_results_user_ex ON exercise_results(user_id, exercise_name, date);
 CREATE INDEX IF NOT EXISTS idx_personal_records_user    ON personal_records(user_id, exercise_name);
 CREATE INDEX IF NOT EXISTS idx_daily_summary_user_date  ON daily_summary(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_monthly_summary_user     ON monthly_summary(user_id, month);

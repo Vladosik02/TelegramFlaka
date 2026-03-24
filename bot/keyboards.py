@@ -187,17 +187,51 @@ def kb_workout_comment() -> InlineKeyboardMarkup:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ПЛАНИРОВАНИЕ И ЧЕК-ИН
+# ЧЕК-ИНЫ V2 — кнопочный flow без AI
 # ═══════════════════════════════════════════════════════════════════════════
 
-def kb_morning_ready() -> InlineKeyboardMarkup:
+def kb_checkin_sleep() -> InlineKeyboardMarkup:
+    """Утренний чек-ин шаг 1: сколько часов сна."""
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Готов",      callback_data="morning_ready"),
-        InlineKeyboardButton("😴 Дай время", callback_data="morning_later"),
+        InlineKeyboardButton("5", callback_data="ci:sleep:5"),
+        InlineKeyboardButton("6", callback_data="ci:sleep:6"),
+        InlineKeyboardButton("7", callback_data="ci:sleep:7"),
+        InlineKeyboardButton("8", callback_data="ci:sleep:8"),
+        InlineKeyboardButton("9", callback_data="ci:sleep:9"),
+        InlineKeyboardButton("10", callback_data="ci:sleep:10"),
     ]])
 
 
+def kb_checkin_wellbeing() -> InlineKeyboardMarkup:
+    """Утренний чек-ин шаг 2: самочувствие 2-5."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("😓 2", callback_data="ci:well:2"),
+        InlineKeyboardButton("😐 3", callback_data="ci:well:3"),
+        InlineKeyboardButton("🙂 4", callback_data="ci:well:4"),
+        InlineKeyboardButton("💪 5", callback_data="ci:well:5"),
+    ]])
+
+
+def kb_checkin_workout_done() -> InlineKeyboardMarkup:
+    """Вечерний/ночной чек-ин: сделал тренировку?"""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Сделал",    callback_data="ci:wk:done"),
+        InlineKeyboardButton("❌ Нет",       callback_data="ci:wk:no"),
+        InlineKeyboardButton("⏭ Пропустил", callback_data="ci:wk:skip"),
+    ]])
+
+
+def kb_checkin_food_skip() -> InlineKeyboardMarkup:
+    """Кнопка «Ничего не ел» для пропуска ответа о еде."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🚫 Ничего не ел", callback_data="ci:food:skip"),
+    ]])
+
+
+# ── Обратная совместимость — старые клавиатуры, которые используются в других местах ──
+
 def kb_workout_done() -> InlineKeyboardMarkup:
+    """Кнопки записи тренировки (guided flow, /today, etc.)."""
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("💪 Сделал",       callback_data="workout_done"),
         InlineKeyboardButton("⏳ Ещё не было",  callback_data="workout_pending"),
@@ -205,23 +239,11 @@ def kb_workout_done() -> InlineKeyboardMarkup:
     ]])
 
 
-def kb_intensity() -> InlineKeyboardMarkup:
-    row1 = [InlineKeyboardButton(str(i), callback_data=f"intensity_{i}") for i in range(1, 6)]
-    row2 = [InlineKeyboardButton(str(i), callback_data=f"intensity_{i}") for i in range(6, 11)]
-    return InlineKeyboardMarkup([row1, row2])
-
-
 def kb_energy() -> InlineKeyboardMarkup:
     labels = ["😴 1", "😐 2", "🙂 3", "😊 4", "⚡ 5"]
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(label, callback_data=f"energy_{i+1}")
         for i, label in enumerate(labels)
-    ]])
-
-
-def kb_evening_confirm() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("👍 Записано", callback_data="evening_ack"),
     ]])
 
 
@@ -364,3 +386,31 @@ def kb_admin_back() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("« Главное меню", callback_data="adm:home"),
     ]])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ADAPTIVE SESSION MODIFIER — авто-подстройка тренировки
+# ═══════════════════════════════════════════════════════════════════════════
+
+def kb_session_adapt(adapt_type: str) -> InlineKeyboardMarkup:
+    """
+    Кнопки принятия/отклонения адаптации тренировки.
+
+    adapt_type: 'deload' | 'light' | 'boost'
+    """
+    if adapt_type == "boost":
+        accept_text = "🔥 Усилить"
+    elif adapt_type == "deload":
+        accept_text = "✅ Deload-день"
+    else:
+        accept_text = "✅ Облегчить"
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(accept_text, callback_data=f"adapt:accept:{adapt_type}"),
+            InlineKeyboardButton("💪 По плану", callback_data="adapt:skip"),
+        ],
+        [
+            InlineKeyboardButton("💬 Записать тренировку", callback_data="workout_done"),
+        ],
+    ])

@@ -52,6 +52,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             call_type           TEXT    DEFAULT 'chat'
         )""",
         "CREATE INDEX IF NOT EXISTS idx_usage_log_user_ts ON ai_usage_log(user_id, timestamp)",
+        # v1.6 — составной индекс для get_exercise_history() по (user_id, exercise_name, date)
+        "CREATE INDEX IF NOT EXISTS idx_exercise_results_user_ex ON exercise_results(user_id, exercise_name, date)",
+        # v1.7 — доступное оборудование (JSON-список) в тренировочной карточке
+        "ALTER TABLE memory_training ADD COLUMN equipment TEXT DEFAULT '[]'",
     ]
     for sql in migrations:
         try:
