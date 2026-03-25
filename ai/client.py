@@ -14,7 +14,14 @@ from config import (
     MODEL_FOOD_PARSE, MAX_TOKENS_FOOD_PARSE,
     MODEL_SCHEDULED, MAX_TOKENS_SCHEDULED,
 )
+import sys
+import io
 
+# Форсируем использование UTF-8 для стандартных потоков вывода
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 logger = logging.getLogger(__name__)
 
 

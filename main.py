@@ -22,11 +22,23 @@ from bot.handlers import handle_message, handle_callback, handle_voice, handle_p
 from scheduler.jobs import setup_scheduler
 
 # ─── Логирование ─────────────────────────────────────────────────────────────
+import sys
+import io as _io
+
+# StreamHandler с явным UTF-8 — иначе в Docker без PYTHONIOENCODING
+# Python открывает stderr в ASCII-режиме и падает на кириллице.
+try:
+    _utf8_stream = _io.TextIOWrapper(
+        sys.stdout.buffer, encoding="utf-8", line_buffering=True
+    )
+except AttributeError:
+    _utf8_stream = sys.stdout  # fallback: pytest, REPL и т.п.
+
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
     handlers=[
-        logging.StreamHandler(),
+        logging.StreamHandler(_utf8_stream),
         logging.FileHandler("trainer.log", encoding="utf-8")
     ]
 )

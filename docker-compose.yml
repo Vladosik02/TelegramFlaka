@@ -15,6 +15,9 @@ services:
     # Часовой пояс — важно для APScheduler
     environment:
       - TZ=Europe/Warsaw
+      - PYTHONIOENCODING=utf-8
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
 
     # Persistent volumes: БД и бэкапы не теряются при пересборке
     volumes:
