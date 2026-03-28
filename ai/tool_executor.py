@@ -93,7 +93,11 @@ async def execute_tool_calls(
                 chat_id=chat_id,
             )
         except Exception as e:
-            logger.error(f"[TOOL] Error in '{tool_name}' for {tg_id}: {e}")
+            input_preview = str(tool_input)[:200] if tool_input is not None else "None"
+            logger.error(
+                f"[TOOL] Error in '{tool_name}' for {tg_id}: {e} "
+                f"| input_type={type(tool_input).__name__} | input={input_preview}"
+            )
             result_content = {"error": str(e), "success": False}
 
         # Уведомляем пользователя если инструмент не сработал (Фаза 14)
@@ -880,17 +884,46 @@ async def _tool_save_training_plan(tg_id: int, inp: dict, **kwargs) -> dict:
         return {"error": "User not found", "success": False}
 
     uid = user["id"]
-    plan_json_str = inp.get("plan_json", "")
+    plan_json_raw = inp.get("plan_json", "")
     rationale     = inp.get("rationale", "")
     week_start    = inp.get("week_start")
 
-    # Валидация JSON
-    try:
-        days = _json.loads(plan_json_str)
-        if not isinstance(days, list) or len(days) == 0:
-            return {"error": "plan_json must be a non-empty JSON array", "success": False}
-    except Exception as e:
-        return {"error": f"Invalid plan_json: {e}", "success": False}
+    # Нормализация: Claude может прислать список вместо JSON-строки (игнорирует type:string в схеме)
+    if isinstance(plan_json_raw, list):
+        days = plan_json_raw
+        plan_json_str = _json.dumps(days, ensure_ascii=False)
+    elif isinstance(plan_json_raw, str):
+        try:
+            days = _json.loads(plan_json_raw)
+        except Exception as e:
+            return {"error": f"Invalid plan_json: {e}", "success": False}
+        plan_json_str = plan_json_raw
+    else:
+        return {
+            "error": f"plan_json must be JSON string or array, got {type(plan_json_raw).__name__}",
+            "success": False,
+        }
+
+    if not isinstance(days, list) or len(days) == 0:
+        return {"error": "plan_json must be a non-empty JSON array", "success": False}
+
+    # Защита от double-encoding: элементы могут быть строками вместо объектов
+    normalized_days = []
+    for item in days:
+        if isinstance(item, str):
+            try:
+                parsed = _json.loads(item)
+                if not isinstance(parsed, dict):
+                    return {"error": "plan_json day entry must be an object", "success": False}
+                normalized_days.append(parsed)
+            except Exception:
+                return {"error": "plan_json contains invalid day string entry", "success": False}
+        elif isinstance(item, dict):
+            normalized_days.append(item)
+        else:
+            return {"error": f"plan_json: unexpected day type {type(item).__name__}", "success": False}
+    days = normalized_days
+    plan_json_str = _json.dumps(days, ensure_ascii=False)
 
     # Определяем неделю: если не задана — текущая неделя (или следующая, если сегодня воскресенье)
     if not week_start:

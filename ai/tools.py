@@ -579,14 +579,15 @@ TOOL_SAVE_TRAINING_PLAN = {
         "type": "object",
         "properties": {
             "plan_json": {
-                "type": "string",
+                "type": "array",
                 "description": (
-                    "JSON-строка с массивом из 7 дней. Каждый день: "
+                    "Массив из 7 дней. Каждый элемент — объект: "
                     "{\"date\": \"YYYY-MM-DD\", \"weekday\": \"Пн\", \"type\": \"strength\", "
                     "\"label\": \"...\", \"exercises\": [...], \"duration_min\": 60, "
                     "\"completed\": false, \"ai_note\": \"...\"}. "
                     "Типы: strength | cardio | hiit | mobility | rest | recovery."
-                )
+                ),
+                "items": {"type": "object"}
             },
             "rationale": {
                 "type": "string",
