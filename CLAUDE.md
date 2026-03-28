@@ -1,31 +1,4 @@
-# Memory
-
-## Me
-Vladislav (Vlad), 23 года, разработчик персонального Telegram-бота-тренера.
-Цель: набрать массу. Тренируется дома. Рост 178 см.
-
-## Projects
-| Name | What | Status |
-|------|------|--------|
-| **Trainer Bot** | Telegram-бот личный тренер «Алекс» (MAX/LIGHT режимы, AI на Anthropic API) | 🟢 Продакшн на Google Cloud VM |
-| **Фаза 7** | Beyond MVP: питание, exercise_results, онбординг, БД v2 | ✅ Закрыта |
-| **Фаза 8** | Analytics, Plans & Proactive AI | ✅ Закрыта |
-| **Фаза 9** | Post-MVP Polish: NLP-парсеры, онбординг, /meal, история планов | ✅ Закрыта |
-| **Фаза 10** | Intelligent Agent & Gamification: Claude Tool Use, Vision, XP/ачивки, память | ✅ Закрыта |
-| **Фаза 11** | UX/UI Polish: /menu, inline keyboards, callback routing | ✅ Закрыта |
-| **Фаза 12** | Advanced Analytics: charts (12.1), periodization (12.2), recovery score (12.3) | ✅ Закрыта |
-| **Agent Fix** | Починка Tool Use: system prompt, L0-контекст, read-tools, regex отключены | ✅ Выполнено |
-| **Фаза 13** | Guided Workout Flow, UX-навигация, notification fix, in-chat debug | ✅ Закрыта |
-| **Фаза 14** | Infrastructure & Bug Fixes: silent exceptions, input validation, upsert, cleanup | ✅ Закрыта |
-| **Фаза 15** | Plan sync, progressive overload hints, /today dashboard, quick meal presets | ✅ Закрыта |
-| **Фаза 16** | Smoke tests, chart buttons в /stats, weekly digest в чат, streak protection | ✅ Закрыта |
-| **Сессия 2026-03-17** | CI/CD, bug fixes, prompts rewrite, cost optimization, nutrition A/B/C, SSH fix | ✅ Закрыта |
-| **Фаза 17** | Tiered context (CRUD vs FULL), filtered tools, cost optimization ~40-50× на CRUD | ✅ Закрыта |
-| **Сессия 2026-03-24** | Stale metrics fix, CLAUDE.md rewrite, deploy.yml syntax coverage | ✅ Закрыта |
-
-→ Детали: memory/projects/
-
-## Stack
+# Stack
 - Python 3.11 + python-telegram-bot 20.7
 - Anthropic API (Claude Sonnet 4) — MODEL: `claude-sonnet-4-20250514`
 - MODEL_SCHEDULED: `claude-haiku-4-5-20251001` (scheduled jobs, 4× дешевле)
@@ -388,17 +361,6 @@ if not os.environ.get("ANTHROPIC_API_KEY"): os.environ["ANTHROPIC_API_KEY"] = "s
 | AUTORECORD | Бот автоматически записывает ответы на свои вопросы (energy/sleep) |
 
 ---
-
-## Key Notion Pages
-| Page | URL |
-|------|-----|
-| ROADMAP | https://www.notion.so/31c8fb7a86e3812a8e20d04186ebebe9 |
-
----
-
-## Current Issues
-Нет открытых известных багов. Бот работает на продакшне.
-Последний деплой: сессия 2026-03-24 (stale metrics fix + CLAUDE.md rewrite + deploy.yml syntax coverage).
 
 ## UX
 - Кнопка меню в чате: MenuButtonCommands() + 10 команд через set_my_commands()
