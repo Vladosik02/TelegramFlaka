@@ -22,7 +22,7 @@ from db.queries.nutrition import get_today_nutrition
 from ai.context_builder import build_weekly_report_context
 from ai.client import generate_scheduled_agent_message
 from db.writer import save_ai_response
-from db.queries.memory import upsert_intelligence, append_observation
+from db.queries.memory import upsert_intelligence, append_observation, get_l0_surface
 from bot.keyboards import (
     kb_checkin_sleep, kb_checkin_wellbeing,
     kb_checkin_workout_done, kb_checkin_food_skip,
@@ -429,6 +429,81 @@ def _parse_l4_response(text: str) -> dict:
     return result
 
 
+_BIO_INSIGHTS_PROMPT = """\
+Атлет: {age} лет, {height_cm} см, {weight_kg} кг, цель: {goal}
+Расчётные биомаркеры:
+- Восстановление: {recovery_tier}
+- TDEE расчётный: {tdee} ккал/день
+- Натуральный потенциал (Berkhan): {potential_range} кг при 10-15% жира
+- Запас до потолка: +{potential_gap} кг
+
+Данные за последние 7 дней:
+- Тренировок: {workouts_done}/{workouts_total}, средняя интенсивность: {avg_intensity}/10
+- Ср. калории в день: {avg_calories} ккал (цель TDEE: {tdee} ккал)
+- Ср. белок: {avg_protein} г/день
+- Ср. сон: {avg_sleep} ч, ср. энергия: {avg_energy}/5
+
+Напиши 2-3 предложения биоинсайта: как физиология атлета (возраст, текущий вес, TDEE-разрыв) \
+влияет на его ТЕКУЩИЙ прогресс и что нужно скорректировать. \
+Конкретно — цифры, без воды. Без вступлений. Только по делу."""
+
+
+def _compute_bio_params(uid: int, user: dict) -> dict:
+    """Вычисляет параметры для BIO_INSIGHTS промпта из статичных данных."""
+    surface  = get_l0_surface(uid) or {}
+    age      = surface.get("age")
+    height   = surface.get("height_cm")
+    goal     = user.get("goal") or "улучшить форму"
+
+    # Вес из последних метрик
+    weight_kg = None
+    metrics_list = get_metrics_range(uid, days=30)
+    for m in (metrics_list or []):
+        if m.get("weight_kg"):
+            weight_kg = m["weight_kg"]
+            break
+
+    # Recovery tier
+    if age:
+        if age <= 25:
+            recovery_tier = f"высокое (≤25 лет, пик анаболического потенциала)"
+        elif age <= 35:
+            recovery_tier = f"хорошее (26-35 лет)"
+        elif age <= 45:
+            recovery_tier = f"среднее (36-45 лет)"
+        else:
+            recovery_tier = f"сниженное ({age}+ лет)"
+    else:
+        recovery_tier = "неизвестно"
+
+    # TDEE (Mifflin-St Jeor, ×1.55)
+    tdee = "нет данных"
+    if age and height and weight_kg:
+        bmr  = 10 * weight_kg + 6.25 * height - 5 * age + 5
+        tdee = str(round(bmr * 1.55 / 50) * 50)
+
+    # Натуральный потенциал (Berkhan)
+    potential_range = "нет данных"
+    potential_gap   = "?"
+    if height and weight_kg:
+        lbm_max       = height - 100
+        target_10     = round(lbm_max / 0.90)
+        target_15     = round(lbm_max / 0.85)
+        potential_range = f"{target_10}-{target_15}"
+        potential_gap = str(max(0, round(target_10 - weight_kg)))
+
+    return {
+        "age":            age or "?",
+        "height_cm":      height or "?",
+        "weight_kg":      weight_kg or "?",
+        "goal":           goal,
+        "recovery_tier":  recovery_tier,
+        "tdee":           tdee,
+        "potential_range": potential_range,
+        "potential_gap":  potential_gap,
+    }
+
+
 async def update_l4_for_user(uid: int, telegram_id: int) -> None:
     """Генерирует L4 Intelligence дайджест для одного пользователя."""
     from ai.client import get_client
@@ -440,6 +515,7 @@ async def update_l4_for_user(uid: int, telegram_id: int) -> None:
 
     weekly = get_weekly_stats(uid)
     streak = get_streak(uid)
+    client = get_client()
 
     prompt = _L4_DIGEST_PROMPT.format(
         workouts_done=weekly.get("workouts_done", 0),
@@ -452,7 +528,6 @@ async def update_l4_for_user(uid: int, telegram_id: int) -> None:
     )
 
     try:
-        client = get_client()
         response = client.messages.create(
             model=MODEL,
             max_tokens=300,
@@ -488,6 +563,50 @@ async def update_l4_for_user(uid: int, telegram_id: int) -> None:
 
     except Exception as e:
         logger.error(f"[L4] Failed to update intelligence for uid={uid}: {e}")
+
+    # ── Bio Insights (отдельный Haiku-вызов, ~150 токенов) ────────────────
+    # Генерируется только если есть минимальные биоданные (age + weight).
+    # Накапливается в memory_intelligence.bio_insights и читается в L4.
+    try:
+        bio_params = _compute_bio_params(uid, user)
+        has_bio = (
+            bio_params["age"] != "?"
+            and bio_params["weight_kg"] != "?"
+        )
+        if has_bio:
+            # Средние показатели питания за неделю
+            from db.queries.nutrition import get_nutrition_log
+            nutrition_hist = get_nutrition_log(uid, days=7) or []
+            avg_calories = "нет данных"
+            avg_protein  = "нет данных"
+            if nutrition_hist:
+                cals    = [n["calories"]  for n in nutrition_hist if n.get("calories")]
+                prots   = [n["protein_g"] for n in nutrition_hist if n.get("protein_g")]
+                if cals:   avg_calories = str(round(sum(cals)  / len(cals)))
+                if prots:  avg_protein  = str(round(sum(prots) / len(prots)))
+
+            bio_prompt = _BIO_INSIGHTS_PROMPT.format(
+                **bio_params,
+                workouts_done=weekly.get("workouts_done", 0),
+                workouts_total=weekly.get("workouts_total", 0),
+                avg_intensity=weekly.get("avg_intensity") or "нет данных",
+                avg_sleep=weekly.get("avg_sleep") or "нет данных",
+                avg_energy=weekly.get("avg_energy") or "нет данных",
+                avg_calories=avg_calories,
+                avg_protein=avg_protein,
+            )
+            bio_response = client.messages.create(
+                model=MODEL,
+                max_tokens=200,
+                system=_L4_SYSTEM,
+                messages=[{"role": "user", "content": bio_prompt}],
+            )
+            bio_text = bio_response.content[0].text.strip()
+            if bio_text:
+                upsert_intelligence(uid, bio_insights=bio_text)
+                logger.info(f"[L4] Bio insights updated for user_id={uid}")
+    except Exception as e:
+        logger.warning(f"[L4] Bio insights generation failed for uid={uid}: {e}")
 
 
 async def cleanup_old_checkins() -> None:

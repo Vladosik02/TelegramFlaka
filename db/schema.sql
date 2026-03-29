@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS memory_intelligence (
     seasonal_context    TEXT,               -- что сейчас важно с учётом сезона
     motivation_level    TEXT DEFAULT 'normal',  -- low / normal / high
     trend_summary       TEXT,               -- краткий трендовый анализ
+    bio_insights        TEXT,               -- AI-анализ биоданных: возраст/рост/вес → потенциал, прогрессия, TDEE-разрыв
     generated_at        TEXT DEFAULT (datetime('now'))
 );
 

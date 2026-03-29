@@ -56,6 +56,8 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_exercise_results_user_ex ON exercise_results(user_id, exercise_name, date)",
         # v1.7 — доступное оборудование (JSON-список) в тренировочной карточке
         "ALTER TABLE memory_training ADD COLUMN equipment TEXT DEFAULT '[]'",
+        # v1.8 — AI-анализ биоданных (возраст/рост/вес → потенциал, прогрессия, TDEE)
+        "ALTER TABLE memory_intelligence ADD COLUMN bio_insights TEXT",
     ]
     for sql in migrations:
         try:

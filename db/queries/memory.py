@@ -326,8 +326,11 @@ def get_l4_intelligence(user_id: int) -> dict:
         "seasonal_context": row.get("seasonal_context"),
         "motivation_level": row.get("motivation_level", "normal"),
         "trend_summary":    row.get("trend_summary"),
+        "bio_insights":     row.get("bio_insights"),
         "generated_at":     row.get("generated_at"),
     }
+
+
 
 
 def append_observation(user_id: int, observation: str,
