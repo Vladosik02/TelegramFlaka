@@ -8,10 +8,10 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters
 )
-from telegram import Update
+from telegram import Update, BotCommand, MenuButtonCommands, BotCommandScopeDefault, BotCommandScopeChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import TELEGRAM_TOKEN
+from config import TELEGRAM_TOKEN, ADMIN_USER_ID
 from db.connection import init_db, close_connection
 from bot.commands import (
     cmd_start, cmd_stop, cmd_stats, cmd_mode, cmd_help, cmd_reset,
@@ -60,6 +60,34 @@ async def post_init(app: Application) -> None:
     # Теперь старт пройдет успешно, так как мы внутри event loop
     scheduler.start()
     logger.info("✅ APScheduler успешно запущен внутри цикла событий.")
+
+    # Регистрация команд в Telegram — появятся в меню "/" у пользователя
+    base_commands = [
+        BotCommand("menu",         "Главное меню"),
+        BotCommand("today",        "Дашборд дня"),
+        BotCommand("stats",        "Статистика за неделю"),
+        BotCommand("plan",         "План тренировок"),
+        BotCommand("profile",      "Мой профиль"),
+        BotCommand("achievements", "Уровень и ачивки"),
+        BotCommand("history",      "Хроника тренировок"),
+        BotCommand("costs",        "Расходы на AI"),
+        BotCommand("help",         "Справка"),
+        BotCommand("start",        "Начать или возобновить"),
+    ]
+    admin_commands = base_commands + [
+        BotCommand("admin", "Панель администратора"),
+    ]
+
+    try:
+        await app.bot.set_my_commands(base_commands, scope=BotCommandScopeDefault())
+        if ADMIN_USER_ID != 0:
+            await app.bot.set_my_commands(
+                admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID)
+            )
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        logger.info("✅ set_my_commands и set_chat_menu_button выполнены.")
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось зарегистрировать команды в Telegram: {e}")
 
 def main() -> None:
     # 1. Инициализация БД
