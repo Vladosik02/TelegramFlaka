@@ -942,7 +942,7 @@ async def _tool_save_training_plan(tg_id: int, inp: dict, **kwargs) -> dict:
             workouts_planned += 1
             volume_total += day.get("duration_min") or 0
         for ex in (day.get("exercises") or []):
-            if ex.get("rpe"):
+            if isinstance(ex, dict) and ex.get("rpe"):
                 intensities.append(float(ex["rpe"]))
 
     intensity_avg = round(sum(intensities) / len(intensities), 1) if intensities else None
