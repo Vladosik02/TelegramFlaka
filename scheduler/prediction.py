@@ -322,6 +322,8 @@ def build_workout_prediction(user_id: int) -> Optional[dict]:
     # 5. Прогнозы для каждого упражнения
     exercise_predictions = []
     for ex in today_plan["exercises"]:
+        if isinstance(ex, str):
+            continue
         name = ex.get("name", "")
         if not name:
             continue
