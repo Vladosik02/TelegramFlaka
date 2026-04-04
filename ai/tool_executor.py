@@ -731,7 +731,7 @@ async def _tool_get_current_plan(tg_id: int, inp: dict, **kwargs) -> dict:
         exercises = day.get("exercises") or []
         if exercises:
             d["exercises"] = [
-                {
+                {"name": ex} if isinstance(ex, str) else {
                     "name": ex.get("name", ""),
                     "sets": ex.get("sets"),
                     "reps": ex.get("reps"),

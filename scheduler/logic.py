@@ -163,6 +163,9 @@ async def send_afternoon_workout_reminder(bot: Bot, telegram_id: int, user_id: i
     exercises = plan_workout.get("exercises") or []
     ex_lines = []
     for ex in exercises[:5]:
+        if isinstance(ex, str):
+            ex_lines.append(f"• {ex}")
+            continue
         parts = [f"• {ex.get('name', '?')}"]
         if ex.get("sets") and ex.get("reps"):
             parts.append(f"{ex['sets']}×{ex['reps']}")
@@ -1108,6 +1111,9 @@ def _format_plan_message(plan: dict) -> str:
 
         exercises = day.get("exercises") or []
         for ex in exercises:
+            if isinstance(ex, str):
+                lines.append(f"• {ex}")
+                continue
             name = ex.get("name", "")
             sets = ex.get("sets")
             reps = ex.get("reps")
@@ -1404,7 +1410,7 @@ async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None
                 workouts_planned += 1
                 volume_total += day.get("duration_min") or 0
             for ex in (day.get("exercises") or []):
-                if ex.get("rpe"):
+                if isinstance(ex, dict) and ex.get("rpe"):
                     intensities.append(ex["rpe"])
     except Exception:
         pass
@@ -1507,6 +1513,9 @@ async def send_pre_workout_reminder(bot: Bot, telegram_id: int) -> None:
 
     if exercises:
         for ex in exercises[:5]:
+            if isinstance(ex, str):
+                lines.append(f"• {ex}")
+                continue
             name = ex.get("name", "")
             sets = ex.get("sets")
             reps = ex.get("reps")
@@ -1577,6 +1586,8 @@ async def send_pre_workout_reminder(bot: Bot, telegram_id: int) -> None:
             from db.queries.exercises import get_exercise_last_result
             overload_lines = []
             for ex in exercises[:3]:
+                if isinstance(ex, str):
+                    continue
                 name = ex.get("name", "")
                 if not name:
                     continue
