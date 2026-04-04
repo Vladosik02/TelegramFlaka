@@ -385,13 +385,9 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
     lines.append(f"Место тренировок: {location_map.get(loc, loc)}")
 
     # ── Биопрофиль (расчётный) — возраст/рост/вес → actionable параметры ──
-    # Variant A: вычисляется при каждом запросе из статичных данных.
-    # Даёт AI конкретные ориентиры для планирования — не «23 года» как факт,
-    # а что это означает для восстановления, прогрессии и TDEE.
     try:
         age       = surface.get("age")
         height_cm = surface.get("height_cm")
-        # Вес берём из уже загруженных recent_metrics (самый свежий)
         weight_kg = None
         try:
             _rm = get_metrics_range(uid, days=30)
@@ -404,55 +400,53 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
 
         bio_lines = []
 
-        # Восстановление и скорость прогрессии (по возрасту)
         if age:
             if age <= 25:
-                bio_lines.append(
-                    f"Восстановление: высокое ({age} лет) — 24-48ч достаточно"
-                )
-                bio_lines.append(
-                    "Прогрессия: агрессивная — пиковый гормональный фон, "
-                    "+2.5-5 кг/2 нед на силовых реально"
-                )
+                bio_lines.append(f"Восстановление: высокое ({age} лет) — 24-48ч достаточно")
+                bio_lines.append("Прогрессия: агрессивная — пиковый гормональный фон, +2.5-5 кг/2 нед на силовых реально")
             elif age <= 35:
-                bio_lines.append(
-                    f"Восстановление: хорошее ({age} лет) — 48-72ч между сессиями"
-                )
+                bio_lines.append(f"Восстановление: хорошее ({age} лет) — 48-72ч между сессиями")
                 bio_lines.append("Прогрессия: умеренная — +1.5-2.5 кг/2 нед")
             elif age <= 45:
-                bio_lines.append(
-                    f"Восстановление: среднее ({age} лет) — 48-72ч обязательно, deload чаще"
-                )
+                bio_lines.append(f"Восстановление: среднее ({age} лет) — 48-72ч обязательно, deload чаще")
                 bio_lines.append("Прогрессия: консервативная — +1-1.5 кг/мес, акцент объём")
             else:
-                bio_lines.append(
-                    f"Восстановление: сниженное ({age} лет) — приоритет восстановлению"
-                )
+                bio_lines.append(f"Восстановление: сниженное ({age} лет) — приоритет восстановлению")
                 bio_lines.append("Прогрессия: медленная — +0.5-1 кг/мес, больше частота меньше объём")
 
-        # TDEE (Mifflin-St Jeor, умеренная активность ×1.55)
         if age and height_cm and weight_kg:
-            bmr  = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5  # male
-            tdee = round(bmr * 1.55 / 50) * 50  # округляем до 50 ккал
+            bmr  = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+            tdee = round(bmr * 1.55 / 50) * 50
             bio_lines.append(f"TDEE расчётный: ~{tdee} ккал/день (умеренная активность)")
 
-        # Натуральный потенциал (Berkhan: LBM_max = height_cm - 100)
         if height_cm and weight_kg:
-            lbm_max  = height_cm - 100          # сухая масса на пике (~5% жира)
-            target_10 = round(lbm_max / 0.90)   # при 10% жира
-            target_15 = round(lbm_max / 0.85)   # при 15% жира
+            lbm_max   = height_cm - 100
+            target_10 = round(lbm_max / 0.90)
+            target_15 = round(lbm_max / 0.85)
             gap = round(target_10 - weight_kg)
             if gap > 0:
-                bio_lines.append(
-                    f"Натуральный потенциал: {target_10}-{target_15} кг "
-                    f"(запас +{gap}+ кг сухой массы от {weight_kg} кг)"
-                )
+                bio_lines.append(f"Натуральный потенциал: {target_10}-{target_15} кг (запас +{gap}+ кг сухой массы от {weight_kg} кг)")
 
         if bio_lines:
             lines.append("## Биопрофиль (расчётный)")
             lines.extend(bio_lines)
     except Exception as e:
         logger.warning(f"[CTX] bio_profile computation failed for uid={uid}: {e}")
+
+    # ── Погода (scheduler/weather.py) — ~30-50 tok ────────────────────────
+    try:
+        from scheduler.weather import (
+            get_weather_for_user, get_user_location,
+            format_weather_context_for_ai,
+        )
+        lat, lon, city = get_user_location(uid)
+        weather = get_weather_for_user(uid, lat, lon)
+        if weather:
+            weather_ctx = format_weather_context_for_ai(weather, city)
+            if weather_ctx:
+                lines.append(weather_ctx)
+    except Exception as e:
+        logger.debug(f"[CTX] weather load failed for uid={uid}: {e}")
 
     return "\n".join(lines)
 

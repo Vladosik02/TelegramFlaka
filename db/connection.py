@@ -58,6 +58,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         "ALTER TABLE memory_training ADD COLUMN equipment TEXT DEFAULT '[]'",
         # v1.8 — AI-анализ биоданных (возраст/рост/вес → потенциал, прогрессия, TDEE)
         "ALTER TABLE memory_intelligence ADD COLUMN bio_insights TEXT",
+        # v1.9 — координаты и город для погодного контекста (scheduler/weather.py)
+        "ALTER TABLE memory_athlete ADD COLUMN weather_lat REAL",
+        "ALTER TABLE memory_athlete ADD COLUMN weather_lon REAL",
+        "ALTER TABLE memory_athlete ADD COLUMN weather_city TEXT",
     ]
     for sql in migrations:
         try:
