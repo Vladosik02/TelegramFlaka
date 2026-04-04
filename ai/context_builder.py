@@ -384,6 +384,21 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
     loc = user.get("training_location", "flexible")
     lines.append(f"Место тренировок: {location_map.get(loc, loc)}")
 
+    # ── Погода (scheduler/weather.py) — ~30-50 tok ────────────────────────
+    try:
+        from scheduler.weather import (
+            get_weather_for_user, get_user_location,
+            format_weather_context_for_ai,
+        )
+        lat, lon, city = get_user_location(uid)
+        weather = get_weather_for_user(uid, lat, lon)
+        if weather:
+            weather_ctx = format_weather_context_for_ai(weather, city)
+            if weather_ctx:
+                lines.append(weather_ctx)
+    except Exception as e:
+        logger.debug(f"[CTX] weather load failed for uid={uid}: {e}")
+
     return "\n".join(lines)
 
 

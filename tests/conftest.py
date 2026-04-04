@@ -71,6 +71,10 @@ def _create_in_memory_db() -> sqlite3.Connection:
         "ALTER TABLE workouts ADD COLUMN plan_id TEXT REFERENCES training_plan(plan_id)",
         # v1.7 — доступное оборудование (JSON-список) в тренировочной карточке
         "ALTER TABLE memory_training ADD COLUMN equipment TEXT DEFAULT '[]'",
+        # v1.8 — координаты и город для погодного контекста (scheduler/weather.py)
+        "ALTER TABLE memory_athlete ADD COLUMN weather_lat REAL",
+        "ALTER TABLE memory_athlete ADD COLUMN weather_lon REAL",
+        "ALTER TABLE memory_athlete ADD COLUMN weather_city TEXT",
     ]
     for sql in migrations:
         try:

@@ -41,7 +41,7 @@ jobs:
           python -m py_compile scheduler/nutrition_analysis.py
           python -m py_compile scheduler/personal_insights.py scheduler/adaptation.py
           python -m py_compile scheduler/prediction.py scheduler/periodization.py
-          python -m py_compile scheduler/teach_moments.py
+          python -m py_compile scheduler/teach_moments.py scheduler/weather.py
           python -m py_compile db/queries/usage.py db/queries/recovery.py
           python -m py_compile db/queries/gamification.py db/queries/episodic.py
           echo "✅ All files OK"
@@ -135,6 +135,9 @@ jobs:
               cp data/trainer.db "backups/ci-$(date +%Y%m%d-%H%M%S).db" \
                 || echo "⚠️ DB backup skipped (permission issue — run: sudo chown -R mrvald19:mrvald19 /opt/trainer-bot/backups)"
             fi
+
+            echo "🔒 Fixing data/ permissions for botuser (uid=1001)..."
+            sudo chown -R 1001:1001 data/ 2>/dev/null || true
 
             echo "🐳 Rebuilding Docker image..."
             docker compose build --no-cache

@@ -418,6 +418,24 @@ async def _tool_update_athlete_card(tg_id: int, inp: dict, **kwargs) -> dict:
         athlete_fields["season"] = inp["season"]
         updated.append("season")
 
+    # Город → геокодинг → weather_lat/lon/city
+    if "city" in inp:
+        city_name = inp["city"].strip()
+        athlete_fields["weather_city"] = city_name
+        try:
+            from scheduler.weather import _geocode_city
+            lat, lon = _geocode_city(city_name)
+            if lat is not None and lon is not None:
+                athlete_fields["weather_lat"] = lat
+                athlete_fields["weather_lon"] = lon
+                updated.append(f"city ({city_name})")
+                logger.info(f"[TOOL] geocoded '{city_name}' → {lat}, {lon}")
+            else:
+                updated.append(f"city ({city_name}, без координат)")
+        except Exception as e:
+            logger.warning(f"[TOOL] geocode failed for '{city_name}': {e}")
+            updated.append(f"city ({city_name}, geocode error)")
+
     if athlete_fields:
         upsert_athlete_card(uid, **athlete_fields)
 
