@@ -86,7 +86,7 @@ def _get_today_plan_workout(user_id: int) -> dict | None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def send_morning_checkin(bot: Bot, telegram_id: int) -> None:
-    """Шаг 1: приветствие + факт + вопрос о сне (кнопки)."""
+    """Шаг 1: приветствие + погода + факт + вопрос о сне (кнопки)."""
     user = get_user(telegram_id)
     if not user or not user["active"]:
         return
@@ -98,9 +98,29 @@ async def send_morning_checkin(bot: Bot, telegram_id: int) -> None:
     streak = get_streak(user["id"])
     fact = random.choice(MORNING_FACTS)
 
+    # ── Погода (scheduler/weather.py) ────────────────────────────────────
+    weather_line = ""
+    try:
+        from scheduler.weather import (
+            get_weather_for_user, get_user_location,
+            format_weather_text, format_weather_training_hint,
+        )
+        lat, lon, city = get_user_location(user["id"])
+        weather = get_weather_for_user(user["id"], lat, lon)
+        if weather:
+            weather_line = format_weather_text(weather, city)
+            training_loc = user.get("training_location", "home")
+            hint = format_weather_training_hint(weather, training_loc)
+            if hint:
+                weather_line += f"\n⚡ {hint}"
+    except Exception as e:
+        logger.warning(f"[CHECKIN] Weather failed for {telegram_id}: {e}")
+
     streak_text = f"  Стрик: {streak} дн." if streak > 0 else ""
+    weather_block = f"\n🌤 {weather_line}\n" if weather_line else ""
     text = (
-        f"Доброе утро, {name}!{streak_text}\n\n"
+        f"Доброе утро, {name}!{streak_text}\n"
+        f"{weather_block}\n"
         f"💡 {fact}\n\n"
         f"Сколько часов спал сегодня?"
     )
@@ -1618,6 +1638,22 @@ async def send_pre_workout_reminder(bot: Bot, telegram_id: int) -> None:
                 lines.append("\n📈 *Прогрессия:*\n" + "\n".join(overload_lines))
         except Exception as oe:
             logger.debug(f"[PRE_WORKOUT] overload hints fallback failed: {oe}")
+
+    # ── Погодная подсказка (scheduler/weather.py) ──────────────────────────
+    try:
+        from scheduler.weather import (
+            get_weather_for_user, get_user_location,
+            format_weather_training_hint,
+        )
+        lat, lon, city = get_user_location(user["id"])
+        weather = get_weather_for_user(user["id"], lat, lon)
+        if weather:
+            training_loc = user.get("training_location", "home")
+            hint = format_weather_training_hint(weather, training_loc)
+            if hint:
+                lines.append(f"\n🌤 {hint}")
+    except Exception as we:
+        logger.debug(f"[PRE_WORKOUT] weather hint failed: {we}")
 
     lines.append("\nНапиши мне когда закончишь 💪")
     text = "\n".join(lines)
