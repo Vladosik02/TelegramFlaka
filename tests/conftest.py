@@ -99,6 +99,7 @@ def patched_db(db_conn):
         "db.queries.memory.get_connection",
         "db.queries.nutrition.get_connection",
         "scheduler.nudges.get_connection",
+        "scheduler.prediction.get_connection",
     ]
     active_patches = []
     for target in _targets:

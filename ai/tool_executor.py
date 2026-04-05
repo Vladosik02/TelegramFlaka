@@ -249,6 +249,37 @@ async def _tool_save_nutrition(tg_id: int, inp: dict, **kwargs) -> dict:
     }
 
 
+def _get_prediction_for_exercise(user_id: int, exercise_name: str) -> dict | None:
+    """Получить базовый прогноз для упражнения (для feedback loop).
+
+    Намеренно НЕ передаёт recovery_score и meso_phase — чтобы predicted_weight
+    отражал ожидаемый прогресс по истории, а не recovery-adjusted рекомендацию.
+    Дельта (факт − предсказание) тогда = чистый сигнал реальной прогрессии.
+    """
+    try:
+        from scheduler.prediction import get_exercise_prediction, get_today_plan_exercises
+
+        plan_sets = plan_reps = plan_weight_target = None
+
+        today_plan = get_today_plan_exercises(user_id)
+        if today_plan:
+            for ex in today_plan["exercises"]:
+                if isinstance(ex, dict) and ex.get("name") == exercise_name:
+                    plan_sets = ex.get("sets")
+                    plan_reps = ex.get("reps")
+                    plan_weight_target = ex.get("weight_kg_target")
+                    break
+
+        return get_exercise_prediction(
+            user_id, exercise_name,
+            plan_sets, plan_reps, plan_weight_target,
+            recovery_score=None, meso_phase=None,
+        )
+    except Exception as e:
+        logger.debug(f"[FEEDBACK] _get_prediction_for_exercise failed: {e}")
+        return None
+
+
 async def _tool_save_exercise_result(tg_id: int, inp: dict, **kwargs) -> dict:
     """Сохранить результат упражнения."""
     user = get_user(tg_id)
@@ -271,6 +302,26 @@ async def _tool_save_exercise_result(tg_id: int, inp: dict, **kwargs) -> dict:
         weight_kg=inp.get("weight_kg"),
         notes=inp.get("notes"),
     )
+
+    # ── Feedback loop: захват предсказания рядом с фактом ──────────────
+    try:
+        pred_data = _get_prediction_for_exercise(user["id"], inp["exercise_name"])
+        if pred_data:
+            pred = pred_data.get("prediction", {})
+            if pred:
+                from db.connection import get_connection
+                conn = get_connection()
+                conn.execute(
+                    "UPDATE exercise_results "
+                    "SET predicted_weight=?, predicted_reps=?, predicted_sets=? "
+                    "WHERE id=?",
+                    (pred.get("weight_kg"), pred.get("reps"),
+                     pred.get("sets"), result_id),
+                )
+                conn.commit()
+                logger.debug(f"[FEEDBACK] prediction captured for result {result_id}")
+    except Exception as e:
+        logger.debug(f"[FEEDBACK] prediction capture skipped: {e}")
 
     logger.info(
         f"[TOOL] save_exercise_result: user={tg_id}, "

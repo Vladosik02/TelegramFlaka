@@ -62,6 +62,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         "ALTER TABLE memory_athlete ADD COLUMN weather_lat REAL",
         "ALTER TABLE memory_athlete ADD COLUMN weather_lon REAL",
         "ALTER TABLE memory_athlete ADD COLUMN weather_city TEXT",
+        # v2.0 — prediction feedback loop: хранение предсказаний рядом с фактом
+        "ALTER TABLE exercise_results ADD COLUMN predicted_weight REAL",
+        "ALTER TABLE exercise_results ADD COLUMN predicted_reps INTEGER",
+        "ALTER TABLE exercise_results ADD COLUMN predicted_sets INTEGER",
     ]
     for sql in migrations:
         try:

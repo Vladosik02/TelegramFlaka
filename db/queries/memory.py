@@ -334,13 +334,22 @@ def get_l4_intelligence(user_id: int) -> dict:
 
 
 def append_observation(user_id: int, observation: str,
-                        max_observations: int = 10) -> None:
-    """Добавляет AI-наблюдение в список, сохраняя последние N штук."""
+                        max_observations: int = 10,
+                        replace_prefix: str = None) -> None:
+    """Добавляет AI-наблюдение в список, сохраняя последние N штук.
+
+    replace_prefix: если передан, удаляет все существующие наблюдения,
+    начинающиеся с этого префикса, перед добавлением нового.
+    Используется для accuracy-observations — обновляем «занижены на X кг»
+    вместо накопления вариаций с разными числами.
+    """
     row = get_intelligence(user_id)
     if row:
         obs = _json_get(row, "ai_observations", [])
     else:
         obs = []
+    if replace_prefix:
+        obs = [o for o in obs if not o.startswith(replace_prefix)]
     if observation not in obs:
         obs.append(observation)
     obs = obs[-max_observations:]  # сохраняем только последние N

@@ -582,6 +582,18 @@ async def update_l4_for_user(uid: int, telegram_id: int) -> None:
         if parsed["observation"]:
             append_observation(uid, parsed["observation"])
 
+        # ── Prediction accuracy observations (zero API cost) ───────────
+        try:
+            from scheduler.prediction import generate_prediction_accuracy_observations
+            accuracy_obs = generate_prediction_accuracy_observations(uid)
+            for obs in accuracy_obs:
+                # Заменяем устаревшее наблюдение по тому же упражнению,
+                # а не накапливаем вариации «занижены на 4.5 / 5.0 / 5.5 кг»
+                prefix = obs.split(" на ")[0]
+                append_observation(uid, obs, replace_prefix=prefix)
+        except Exception as e:
+            logger.debug(f"[L4] prediction accuracy obs failed for uid={uid}: {e}")
+
         logger.info(f"[L4] Intelligence updated for user_id={uid}")
 
     except Exception as e:

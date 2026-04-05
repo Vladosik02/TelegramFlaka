@@ -79,6 +79,7 @@ def get_exercise_prediction(
     plan_weight_target: float = None,
     recovery_score: int = None,
     meso_phase: str = None,
+    increment: float = None,
 ) -> dict:
     """
     Генерирует прогноз для одного упражнения.
@@ -180,6 +181,10 @@ def get_exercise_prediction(
         return result
 
     # ── Нормальная прогрессия ───────────────────────────────────────────
+    # Калиброванный шаг прогрессии (может быть передан батчем из build_workout_prediction)
+    if increment is None:
+        increment = get_calibrated_increment(user_id, exercise_name)
+
     # Анализ тренда: вес растёт / стоит / падает
     trend = _analyze_weight_trend(history)
 
@@ -191,7 +196,7 @@ def get_exercise_prediction(
     if last_w > 0:
         # Если предыдущий вес >= плановому — пора повышать
         if plan_weight_target and last_w >= float(plan_weight_target):
-            pred_w = round(last_w + WEIGHT_INCREMENT_KG, 1)
+            pred_w = round(last_w + increment, 1)
             reasoning_parts.append(
                 f"В прошлый раз {last_w} кг — план выполнен, пробуй {pred_w} кг."
             )
@@ -204,12 +209,12 @@ def get_exercise_prediction(
             # Нет плановой цели — двигаемся от последнего результата
             if trend == "stable" and last_r >= (plan_reps or 8):
                 # Стабильно выполняет все повторения — повышаем вес
-                pred_w = round(last_w + WEIGHT_INCREMENT_KG, 1)
+                pred_w = round(last_w + increment, 1)
                 reasoning_parts.append(
-                    f"Стабильно {last_s}×{last_r} @ {last_w} кг — пора +{WEIGHT_INCREMENT_KG} кг."
+                    f"Стабильно {last_s}×{last_r} @ {last_w} кг — пора +{increment} кг."
                 )
             elif trend == "growing":
-                pred_w = round(last_w + WEIGHT_INCREMENT_KG, 1)
+                pred_w = round(last_w + increment, 1)
                 reasoning_parts.append(
                     f"Прогресс идёт! Был {last_w} кг — давай {pred_w} кг."
                 )
@@ -260,6 +265,126 @@ def _analyze_weight_trend(history: list) -> str:
         return "stable"
     else:
         return "declining"
+
+
+def get_calibrated_increment(user_id: int, exercise_name: str) -> float:
+    """
+    Возвращает калиброванный шаг прогрессии для пользователя и упражнения.
+
+    Читает среднюю дельту (факт − предсказание) за 4 недели.
+    Если предсказания стабильно занижены — увеличивает шаг.
+    Если завышены — уменьшает. Минимум 3 записи для калибровки.
+    """
+    conn = get_connection()
+    since = (datetime.date.today() - datetime.timedelta(days=28)).isoformat()
+
+    rows = conn.execute("""
+        SELECT weight_kg, predicted_weight
+        FROM exercise_results
+        WHERE user_id = ? AND exercise_name = ? AND date >= ?
+          AND weight_kg IS NOT NULL AND predicted_weight IS NOT NULL
+          AND weight_kg > 0 AND predicted_weight > 0
+        ORDER BY date DESC
+    """, (user_id, exercise_name, since)).fetchall()
+
+    if len(rows) < 3:
+        return WEIGHT_INCREMENT_KG
+
+    deltas = [dict(r)["weight_kg"] - dict(r)["predicted_weight"] for r in rows]
+    avg_delta = sum(deltas) / len(deltas)
+
+    adjustment = round(avg_delta * 0.25, 1)
+    calibrated = WEIGHT_INCREMENT_KG + adjustment
+    calibrated = max(1.25, min(5.0, calibrated))
+    calibrated = round(calibrated, 1)
+
+    if calibrated != WEIGHT_INCREMENT_KG:
+        logger.info(
+            f"[FEEDBACK] calibrated increment for {exercise_name}: "
+            f"{calibrated} kg (base {WEIGHT_INCREMENT_KG}, avg_delta {avg_delta:.1f})"
+        )
+
+    return calibrated
+
+
+def _get_calibrated_increments_batch(user_id: int, exercise_names: list) -> dict:
+    """
+    Батч-версия get_calibrated_increment для нескольких упражнений.
+    Один SQL-запрос вместо N — используется в build_workout_prediction.
+    Returns: {exercise_name: increment_kg}. Отсутствующие → WEIGHT_INCREMENT_KG.
+    """
+    if not exercise_names:
+        return {}
+    conn = get_connection()
+    since = (datetime.date.today() - datetime.timedelta(days=28)).isoformat()
+    placeholders = ",".join("?" * len(exercise_names))
+    rows = conn.execute(
+        f"""
+        SELECT exercise_name,
+               AVG(weight_kg - predicted_weight) AS avg_delta,
+               COUNT(*) AS cnt
+        FROM exercise_results
+        WHERE user_id = ? AND exercise_name IN ({placeholders}) AND date >= ?
+          AND weight_kg IS NOT NULL AND predicted_weight IS NOT NULL
+          AND weight_kg > 0 AND predicted_weight > 0
+        GROUP BY exercise_name
+        """,
+        (user_id, *exercise_names, since),
+    ).fetchall()
+
+    result = {}
+    for row in rows:
+        r = dict(row)
+        if r["cnt"] >= 3:
+            avg_delta = r["avg_delta"]
+            adjustment = round(avg_delta * 0.25, 1)
+            calibrated = max(1.25, min(5.0, round(WEIGHT_INCREMENT_KG + adjustment, 1)))
+            result[r["exercise_name"]] = calibrated
+    return result
+
+
+def generate_prediction_accuracy_observations(user_id: int) -> list:
+    """
+    Анализирует точность предсказаний за неделю.
+    Возвращает список observation-строк для L4 (на русском).
+    Ноль вызовов API — чистая арифметика.
+    """
+    conn = get_connection()
+    since = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+
+    rows = conn.execute("""
+        SELECT exercise_name,
+               AVG(weight_kg - predicted_weight) AS avg_weight_delta,
+               AVG(reps - predicted_reps) AS avg_reps_delta,
+               COUNT(*) AS cnt
+        FROM exercise_results
+        WHERE user_id = ? AND date >= ?
+          AND predicted_weight IS NOT NULL
+        GROUP BY exercise_name
+        HAVING cnt >= 2
+    """, (user_id, since)).fetchall()
+
+    observations = []
+    for row in rows:
+        r = dict(row)
+        name = r["exercise_name"]
+        w_delta = r["avg_weight_delta"] or 0
+        r_delta = r["avg_reps_delta"] or 0
+
+        if abs(w_delta) >= 2.0:
+            direction = "занижены" if w_delta > 0 else "завышены"
+            observations.append(
+                f"Предсказания {name} стабильно {direction} "
+                f"на {abs(round(w_delta, 1))} кг"
+            )
+        elif abs(r_delta) >= 2:
+            direction = "занижены" if r_delta > 0 else "завышены"
+            observations.append(
+                f"Предсказания повторений {name} {direction} "
+                f"на {abs(round(r_delta))}"
+            )
+
+    return observations
 
 
 def build_workout_prediction(user_id: int) -> Optional[dict]:
@@ -320,6 +445,13 @@ def build_workout_prediction(user_id: int) -> Optional[dict]:
     energy = dict(recent).get("energy") if recent else None
 
     # 5. Прогнозы для каждого упражнения
+    # Калиброванные инкременты — один батч-запрос вместо N
+    plan_exercise_names = [
+        ex.get("name") for ex in today_plan["exercises"]
+        if isinstance(ex, dict) and ex.get("name")
+    ]
+    increments = _get_calibrated_increments_batch(user_id, plan_exercise_names)
+
     exercise_predictions = []
     for ex in today_plan["exercises"]:
         if isinstance(ex, str):
@@ -336,6 +468,7 @@ def build_workout_prediction(user_id: int) -> Optional[dict]:
             plan_weight_target=ex.get("weight_kg_target"),
             recovery_score=recovery_score,
             meso_phase=meso_phase,
+            increment=increments.get(name),
         )
         exercise_predictions.append(pred)
 
