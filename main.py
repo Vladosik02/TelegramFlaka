@@ -16,7 +16,7 @@ from db.connection import init_db, close_connection
 from bot.commands import (
     cmd_start, cmd_stop, cmd_stats, cmd_mode, cmd_help, cmd_reset,
     cmd_export, cmd_profile, cmd_test, cmd_plan, cmd_admin, cmd_setup, cmd_meal,
-    cmd_achievements, cmd_history, cmd_menu, cmd_today, cmd_costs
+    cmd_achievements, cmd_history, cmd_menu, cmd_today, cmd_costs, cmd_workout
 )
 from bot.handlers import handle_message, handle_callback, handle_voice, handle_photo
 from scheduler.jobs import setup_scheduler
@@ -67,6 +67,7 @@ async def post_init(app: Application) -> None:
         BotCommand("today",        "Дашборд дня"),
         BotCommand("stats",        "Статистика за неделю"),
         BotCommand("plan",         "План тренировок"),
+        BotCommand("workout",      "Тренировка на сегодня"),
         BotCommand("profile",      "Мой профиль"),
         BotCommand("achievements", "Уровень и ачивки"),
         BotCommand("history",      "Хроника тренировок"),
@@ -144,6 +145,7 @@ def main() -> None:
     app.add_handler(CommandHandler("menu",         cmd_menu))
     app.add_handler(CommandHandler("today",        cmd_today))
     app.add_handler(CommandHandler("costs",        cmd_costs))
+    app.add_handler(CommandHandler("workout",      cmd_workout))
 
     # 4. Обработка контента (Текст, Голос, Фото)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

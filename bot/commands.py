@@ -45,6 +45,7 @@ HELP_TEXT = """
 /history — хроника за последние N дней
 /test — фитнес-тест (отжимания, приседания, планка)
 /plan — план тренировок на эту неделю
+/workout — тренировка на сегодня (с учётом оборудования и истории)
 /achievements — уровень, XP и ачивки ⚡
 /mode — текущий режим (MAX/LIGHT)
 /setup — изменить расписание и предпочтения
@@ -995,3 +996,39 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown",
         reply_markup=kb_today_quick(),
     )
+
+
+# ─── /workout — тренировка на сегодня ─────────────────────────────────────────
+
+async def cmd_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Генерирует тренировку на сегодня с учётом оборудования, уровня и истории."""
+    import os
+    from ai.context_builder import build_layered_context
+    from ai.client import generate_agent_response
+    from db.writer import save_user_message, save_ai_response
+    from config import PROMPTS_DIR
+
+    tg = update.effective_user
+    user = get_user(tg.id)
+    if not user or not user["active"]:
+        return
+
+    user_msg = "Составь мне тренировку на сегодня"
+    save_user_message(tg.id, user_msg)
+
+    context = build_layered_context(tg.id, user_msg)
+
+    workout_prompt_path = os.path.join(PROMPTS_DIR, "workout_planning.txt")
+    with open(workout_prompt_path, "r", encoding="utf-8") as f:
+        context["system"] = context["system"] + "\n\n" + f.read()
+
+    bot = update.message.get_bot()
+    response = await generate_agent_response(
+        bot=bot,
+        chat_id=update.message.chat_id,
+        context=context,
+        user_message=user_msg,
+        tg_id=tg.id,
+    )
+    if response:
+        save_ai_response(tg.id, response)
