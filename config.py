@@ -9,6 +9,12 @@ TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")   # опционально — для Whisper
 
+# ─── Язык интерфейса ─────────────────────────────────────────────────────────
+# BOT_LANG используется вместо LANG, чтобы не конфликтовать с системной
+# переменной LANG (Linux: "C", "en_US.UTF-8" и т.п.)
+_bot_lang = os.getenv("BOT_LANG", os.getenv("LANG", "ru"))
+LANG = _bot_lang if _bot_lang in ("ru", "uk") else "ru"
+
 # ─── Валидация обязательных переменных при старте (Фаза 14.4) ─────────────────
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_TOKEN не задан в .env — бот не может запуститься")
