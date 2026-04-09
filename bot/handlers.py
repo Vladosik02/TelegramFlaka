@@ -35,6 +35,7 @@ from config import (
     HEALTH_KEYWORDS, OPENAI_API_KEY,
     TEST_MAX_PUSHUPS, TEST_MAX_SQUATS, TEST_MAX_PLANK_SEC,
 )
+from lang import t
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,10 @@ _AWAITING_FOOD: dict[int, str] = {}
 _CHECKIN_SLOT: dict[int, str] = {}
 
 GOAL_MAP = {
-    "goal_lose": "похудеть",
-    "goal_gain": "набрать массу",
-    "goal_endurance": "выносливость",
-    "goal_general": "общая форма",
+    "goal_lose": "lose_weight",
+    "goal_gain": "gain_mass",
+    "goal_endurance": "endurance",
+    "goal_general": "general_fitness",
 }
 LEVEL_MAP = {
     "level_beginner": "beginner",
@@ -61,9 +62,9 @@ TIME_MAP = {
     "time_flexible": "flexible",
 }
 TIME_LABELS = {
-    "morning":  "утром 🌅",
-    "evening":  "вечером 🌙",
-    "flexible": "гибко ⏰",
+    "morning":  t("time_morning"),
+    "evening":  t("time_evening"),
+    "flexible": t("time_flexible"),
 }
 LOCATION_MAP = {
     "location_home":     "home",
@@ -72,10 +73,10 @@ LOCATION_MAP = {
     "location_flexible": "flexible",
 }
 LOCATION_LABELS = {
-    "home":     "дома 🏠",
-    "gym":      "в зале 🏋️",
-    "outdoor":  "на улице 🌳",
-    "flexible": "по-разному 🔄",
+    "home":     t("location_home"),
+    "gym":      t("location_gym"),
+    "outdoor":  t("location_outdoor"),
+    "flexible": t("location_flexible"),
 }
 DAYS_MAP = {
     "days_3x":    ["пн", "ср", "пт"],
@@ -85,11 +86,11 @@ DAYS_MAP = {
     "days_flex":  [],
 }
 DAYS_LABELS = {
-    "days_3x":    "3 раза в неделю",
-    "days_4x":    "4 раза в неделю",
-    "days_5x":    "5 раз в неделю",
-    "days_daily": "ежедневно",
-    "days_flex":  "как получится",
+    "days_3x":    t("days_3x"),
+    "days_4x":    t("days_4x"),
+    "days_5x":    t("days_5x"),
+    "days_daily": t("days_daily"),
+    "days_flex":  t("days_flex"),
 }
 
 
@@ -117,20 +118,16 @@ async def _handle_onboarding_step(
                 if not (10 <= age <= 100):
                     raise ValueError
             except ValueError:
-                await update.message.reply_text(
-                    "Введи целое число от 10 до 100. Например: 25\n"
-                    "Или напиши /skip чтобы пропустить."
-                )
+                await update.message.reply_text(t("onb_age_prompt"))
                 return
             upsert_athlete_card(uid, age=age)
-            ack = f"Записал — {age} лет ✅\n\n"
+            ack = t("onb_age_ack", val=age)
         else:
             ack = ""
 
         ctx.user_data["onboarding_step"] = "awaiting_weight"
         await update.message.reply_text(
-            ack + "*Текущий вес* в кг? (например: 75 или 75.5)\n"
-            "Или /skip",
+            ack + t("onb_weight_prompt"),
             parse_mode="Markdown"
         )
 
@@ -142,20 +139,16 @@ async def _handle_onboarding_step(
                 if not (30.0 <= weight <= 300.0):
                     raise ValueError
             except ValueError:
-                await update.message.reply_text(
-                    "Введи число от 30 до 300. Например: 75 или 75.5\n"
-                    "Или /skip"
-                )
+                await update.message.reply_text(t("onb_weight_invalid"))
                 return
             save_metrics_from_parsed(tg.id, {"weight_kg": weight})
-            ack = f"Записал — {weight} кг ✅\n\n"
+            ack = t("onb_weight_ack", val=weight)
         else:
             ack = ""
 
         ctx.user_data["onboarding_step"] = "awaiting_height"
         await update.message.reply_text(
-            ack + "*Рост* в см? (например: 180)\n"
-            "Или /skip",
+            ack + t("onb_height_prompt"),
             parse_mode="Markdown"
         )
 
@@ -167,20 +160,16 @@ async def _handle_onboarding_step(
                 if not (100.0 <= height <= 250.0):
                     raise ValueError
             except ValueError:
-                await update.message.reply_text(
-                    "Введи число от 100 до 250. Например: 180\n"
-                    "Или /skip"
-                )
+                await update.message.reply_text(t("onb_height_invalid"))
                 return
             upsert_athlete_card(uid, height_cm=height)
-            ack = f"Записал — {int(height)} см ✅\n\n"
+            ack = t("onb_height_ack", val=int(height))
         else:
             ack = ""
 
         ctx.user_data.pop("onboarding_step", None)
         await update.message.reply_text(
-            ack + "Есть ли у тебя травмы или ограничения по здоровью,\n"
-            "которые нужно учитывать при тренировках?",
+            ack + t("onb_health_prompt"),
             reply_markup=kb_health_check()
         )
 
@@ -191,13 +180,13 @@ async def _handle_onboarding_step(
             # Сохраняем как JSON-список из одной строки
             injuries = json.dumps([text.strip()[:200]], ensure_ascii=False)
             update_user(tg.id, injuries=injuries)
-            ack = "Записал ✅\n\n"
+            ack = t("onb_health_ack")
         else:
             ack = ""
 
         ctx.user_data.pop("onboarding_step", None)
         await update.message.reply_text(
-            ack + "Когда тебе удобнее тренироваться?",
+            ack + t("onb_time_prompt"),
             reply_markup=kb_workout_time()
         )
 
@@ -222,7 +211,7 @@ async def _handle_test_step(
     if cancel:
         ctx.user_data.pop("test_step", None)
         ctx.user_data.pop("test_data", None)
-        await update.message.reply_text("Тест отменён.")
+        await update.message.reply_text(t("test_cancelled"))
         return
 
     data = ctx.user_data.get("test_data", {})
@@ -234,10 +223,7 @@ async def _handle_test_step(
             if not (0 <= val <= TEST_MAX_PUSHUPS):
                 raise ValueError
         except ValueError:
-            await update.message.reply_text(
-                f"Введи целое число от 0 до {TEST_MAX_PUSHUPS}.\n"
-                "Или /cancel для отмены."
-            )
+            await update.message.reply_text(t("test_pushup_invalid", max=TEST_MAX_PUSHUPS))
             return
 
         data["pushups"] = val
@@ -247,12 +233,7 @@ async def _handle_test_step(
         ctx.user_data["test_step"] = "squats"
 
         await update.message.reply_text(
-            f"Отжимания: *{val}* → {score:.0f}/100 ✅\n\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "*Тест 2/3 — Приседания*\n"
-            "Максимальное количество приседаний\n"
-            "без остановки, полная амплитуда.\n\n"
-            "_Напиши результат числом._",
+            t("test_pushup_done", val=val, score=score),
             parse_mode="Markdown",
         )
 
@@ -263,10 +244,7 @@ async def _handle_test_step(
             if not (0 <= val <= TEST_MAX_SQUATS):
                 raise ValueError
         except ValueError:
-            await update.message.reply_text(
-                f"Введи целое число от 0 до {TEST_MAX_SQUATS}.\n"
-                "Или /cancel для отмены."
-            )
+            await update.message.reply_text(t("test_squat_invalid", max=TEST_MAX_SQUATS))
             return
 
         data["squats"] = val
@@ -276,12 +254,7 @@ async def _handle_test_step(
         ctx.user_data["test_step"] = "plank"
 
         await update.message.reply_text(
-            f"Приседания: *{val}* → {score:.0f}/100 ✅\n\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "*Тест 3/3 — Планка*\n"
-            "Удерживай планку максимально долго.\n"
-            "Засекай время сам или попроси кого-то.\n\n"
-            "_Напиши результат в секундах._",
+            t("test_squat_done", val=val, score=score),
             parse_mode="Markdown",
         )
 
@@ -292,10 +265,7 @@ async def _handle_test_step(
             if not (0 <= val <= TEST_MAX_PLANK_SEC):
                 raise ValueError
         except ValueError:
-            await update.message.reply_text(
-                f"Введи целое число от 0 до {TEST_MAX_PLANK_SEC} (секунд).\n"
-                "Или /cancel для отмены."
-            )
+            await update.message.reply_text(t("test_plank_invalid", max=TEST_MAX_PLANK_SEC))
             return
 
         data["plank"] = val
@@ -305,11 +275,7 @@ async def _handle_test_step(
         ctx.user_data["test_step"] = "hr"
 
         await update.message.reply_text(
-            f"Планка: *{val} сек* → {score:.0f}/100 ✅\n\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "❤️ *ЧСС покоя* (опционально)\n"
-            "Измерь пульс в покое (уд/мин).\n\n"
-            "_Напиши число или /skip чтобы пропустить._",
+            t("test_plank_done", val=val, score=score),
             parse_mode="Markdown",
         )
 
@@ -324,10 +290,7 @@ async def _handle_test_step(
                 if not (30 <= resting_hr <= 220):
                     raise ValueError
             except ValueError:
-                await update.message.reply_text(
-                    "Введи число от 30 до 220 (уд/мин).\n"
-                    "Или /skip чтобы пропустить."
-                )
+                await update.message.reply_text(t("test_hr_invalid"))
                 return
 
         data["hr"] = resting_hr
@@ -350,19 +313,19 @@ async def _handle_test_step(
         level = get_fitness_level(f_score)
 
         result_lines = [
-            "✅ *Тест завершён!*",
+            t("test_finish_header"),
             "",
-            f"Отжимания: {data['pushups']} → *{data['pushups_score']:.0f}*/100",
-            f"Приседания: {data['squats']} → *{data['squats_score']:.0f}*/100",
-            f"Планка: {data['plank']}с → *{data['plank_score']:.0f}*/100",
+            t("test_result_pushups", val=data['pushups'], score=f"{data['pushups_score']:.0f}"),
+            t("test_result_squats",  val=data['squats'],  score=f"{data['squats_score']:.0f}"),
+            t("test_result_plank",   val=data['plank'],   score=f"{data['plank_score']:.0f}"),
         ]
         if resting_hr:
-            result_lines.append(f"ЧСС покоя: {resting_hr} уд/мин")
+            result_lines.append(t("test_result_hr", val=resting_hr))
 
         result_lines += [
             "",
-            f"🏆 *Fitness Score: {f_score:.0f}/100*",
-            f"Уровень: *{level}*",
+            t("test_result_score", score=f"{f_score:.0f}"),
+            t("test_result_level", level=level),
         ]
 
         # ── Сравнение с предыдущим тестом ────────────────────────────────────
@@ -379,10 +342,10 @@ async def _handle_test_step(
                 datetime.date.today()
                 - datetime.date.fromisoformat(prev["tested_at"])
             ).days
+            delta_str = f"{'+' if delta > 0 else ''}{delta:.0f}"
             result_lines += [
                 "",
-                f"{arrow} Прошлый тест: {prev_score:.0f}/100 "
-                f"({days_ago} дн. назад) → {'+' if delta > 0 else ''}{delta:.0f} очков",
+                t("test_result_prev", arrow=arrow, prev=f"{prev_score:.0f}", days=days_ago, delta=delta_str),
             ]
 
         # ── Очищаем state machine ────────────────────────────────────────────
@@ -441,9 +404,7 @@ async def _process_user_input(
             save_ai_response(tg_id, response)
     except Exception as e:
         logger.error(f"AI processing error for {tg_id}: {e}")
-        await update.message.reply_text(
-            "Что-то пошло не так. Попробуй ещё раз."
-        )
+        await update.message.reply_text(t("wf_save_error"))
 
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -472,18 +433,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     # ── Проверка пользователя ─────────────────────────────────────────────────
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text(
-            "Привет! Напиши /start чтобы начать."
-        )
+        await update.message.reply_text(t("no_profile_hint"))
         return
 
     # ── Health check ──────────────────────────────────────────────────────────
     if detect_health_alert(text, HEALTH_KEYWORDS):
-        await update.message.reply_text(
-            "⚠️ Звучит серьёзно. Если есть боль или дискомфорт — "
-            "остановись и при необходимости обратись к врачу. "
-            "Тренировку пропустить — не страшно. Расскажи подробнее что случилось?"
-        )
+        await update.message.reply_text(t("health_alert"))
         save_user_message(tg.id, text)
         return
 
@@ -510,16 +465,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             wf.pop("awaiting_custom_duration", None)
             ctx.user_data["workout_flow"] = wf
             await update.message.reply_text(
-                f"⏱ {dur} мин — записал.\n\n"
-                "Оцени интенсивность (RPE 1-10):\n"
-                "_1 = прогулка, 5 = обычная, 10 = максимум_",
+                t("wf_dur_done", dur=dur),
                 parse_mode="Markdown",
                 reply_markup=kb_workout_rpe()
             )
         except (ValueError, TypeError):
-            await update.message.reply_text(
-                "Напиши число от 5 до 300 (минуты тренировки). Например: 45"
-            )
+            await update.message.reply_text(t("wf_dur_invalid"))
         return
 
     # Если в flow на шаге комментария — ждём текстовый ввод
@@ -534,7 +485,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             from db.queries.user import get_user as _get_user
             import datetime as _dt
             user2 = _get_user(tg.id)
-            label = wf.get("label", "тренировка")
+            label = wf.get("label", t("history_workout_default"))
             notes_parts = []
             if wf.get("feeling"):
                 notes_parts.append(f"Ощущения: {wf['feeling']}")
@@ -575,15 +526,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             except Exception as pe:
                 logger.warning(f"[WF] mark_plan_day_completed failed: {pe}")
             await update.message.reply_text(
-                f"✅ Тренировка записана! +{xp} XP 🎉\n\n"
-                f"📝 *{label}* · ощущения: {wf.get('feeling', '—')}\n"
-                f"Комментарий: {text}\n\nХорошая работа! 💪",
+                t("wf_saved_simple", xp=xp, label=label, feel=wf.get("feeling", "—"), comment=text),
                 parse_mode="Markdown",
                 reply_markup=kb_back_to_menu()
             )
         except Exception as e:
             logger.error(f"[WF] save from text failed for {tg.id}: {e}")
-            await update.message.reply_text("❌ Не удалось сохранить. Попробуй ещё раз.")
+            await update.message.reply_text(t("wf_save_error"))
         finally:
             # Гарантированно сбрасываем состояние flow в любом случае
             ctx.user_data.pop("workout_flow", None)
@@ -604,8 +553,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if data in GOAL_MAP:
         goal = GOAL_MAP[data]
         update_user(tg.id, goal=goal)
+        goal_label = t(f"goal_{goal}")
         await query.edit_message_text(
-            f"Отлично! Цель: *{goal}*\n\nТеперь скажи — какой у тебя уровень подготовки?",
+            t("onb_goal_done", goal=goal_label),
             parse_mode="Markdown",
             reply_markup=kb_fitness_level()
         )
@@ -615,14 +565,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if data in LEVEL_MAP:
         level = LEVEL_MAP[data]
         update_user(tg.id, fitness_level=level)
-        level_names = {"beginner": "начинающий", "intermediate": "средний", "advanced": "продвинутый"}
+        level_label = t(f"level_{level}")
         ctx.user_data["onboarding_step"] = "awaiting_age"
         await query.edit_message_text(
-            f"Уровень: *{level_names[level]}* ✅\n\n"
-            "Теперь пара вопросов для персонализации — "
-            "чтобы давать точные рекомендации по нагрузке и питанию.\n\n"
-            "*Сколько тебе лет?*\n"
-            "Или напиши /skip",
+            t("onb_level_done", level=level_label),
             parse_mode="Markdown"
         )
         return
@@ -630,8 +576,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     # ── Онбординг: здоровье — всё ок ─────────────────────────────────────────
     if data == "health_ok":
         await query.edit_message_text(
-            "Отлично, без ограничений ✅\n\n"
-            "Когда тебе удобнее тренироваться?",
+            t("onb_health_ok"),
             reply_markup=kb_workout_time()
         )
         return
@@ -640,9 +585,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "health_issues":
         ctx.user_data["onboarding_step"] = "awaiting_health_text"
         await query.edit_message_text(
-            "Опиши коротко — что болит или что нельзя делать?\n"
-            "Например: _колено — нет приседаний, спина — без становой_\n\n"
-            "Или напиши /skip чтобы пропустить.",
+            t("onb_health_describe"),
             parse_mode="Markdown"
         )
         return
@@ -655,8 +598,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             upsert_training_intel(user["id"], preferred_time=preferred_time)
         label = TIME_LABELS[preferred_time]
         await query.edit_message_text(
-            f"Тренировки {label} — записал ✅\n\n"
-            "Где обычно тренируешься?",
+            t("onb_time_done", label=label),
             reply_markup=kb_training_location()
         )
         return
@@ -669,8 +611,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             update_user(tg.id, training_location=location)
         label = LOCATION_LABELS[location]
         await query.edit_message_text(
-            f"Тренируешься {label} — записал ✅\n\n"
-            "Сколько дней в неделю планируешь тренироваться?",
+            t("onb_location_done", label=label),
             reply_markup=kb_training_days()
         )
         return
@@ -684,11 +625,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         if user:
             upsert_training_intel(user["id"], preferred_days=json.dumps(days, ensure_ascii=False))
         await query.edit_message_text(
-            f"Тренировки {label} — записал ✅\n\n"
-            "Настройка завершена! 💪\n"
-            "Буду присылать чек-ины и следить за прогрессом.\n\n"
-            "Посмотри свой профиль: /profile\n"
-            "Режим на сегодня: /mode",
+            t("onb_days_done", label=label),
             parse_mode="Markdown",
             reply_markup=kb_main_menu(),
         )
@@ -718,34 +655,31 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             except Exception as e:
                 logger.warning(f"[WF] Plan parse error for {tg.id}: {e}")
         # Инициализируем Guided Flow
+        default_label = t("history_workout_default")
         ctx.user_data["workout_flow"] = {
             "workout_type": (today_workout.get("type") or "strength") if today_workout else "strength",
-            "label": (today_workout.get("label") or today_workout.get("type") or "тренировка") if today_workout else "тренировка",
+            "label": (today_workout.get("label") or today_workout.get("type") or default_label) if today_workout else default_label,
             "exercises": (today_workout.get("exercises") or []) if today_workout else [],
         }
         label = ctx.user_data["workout_flow"]["label"]
         await query.edit_message_text(
-            f"💪 *{label}*\n\nСколько времени заняла тренировка?",
+            t("wf_start", label=label),
             parse_mode="Markdown",
             reply_markup=kb_workout_duration()
         )
         return
 
     if data == "workout_skipped":
-        await query.edit_message_text(
-            "Окей, записал. Что помешало? Завтра наверстаем."
-        )
+        await query.edit_message_text(t("wf_decline"))
         return
 
     if data == "workout_pending":
-        await query.edit_message_text(
-            "Хорошо, ещё успеешь. Когда планируешь?"
-        )
+        await query.edit_message_text(t("wf_later"))
         return
 
     # ── Напоминание ───────────────────────────────────────────────────────────
     if data == "reminder_go":
-        await query.edit_message_text("Отлично, иди! 🔥")
+        await query.edit_message_text(t("wf_go"))
         return
 
     if data == "reminder_snooze":
@@ -761,15 +695,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 id=f"snooze_{tg.id}",
                 replace_existing=True,
             )
-            await query.edit_message_text("⏰ Напомню через 30 минут. Отдыхай.")
+            await query.edit_message_text(t("wf_remind_30"))
         else:
-            await query.edit_message_text("⏰ Напомню через 30 минут.")
+            await query.edit_message_text(t("wf_remind_30"))
         return
 
     if data == "reminder_skip":
-        await query.edit_message_text(
-            "Окей. Расскажи потом — почему не получилось."
-        )
+        await query.edit_message_text(t("wf_skip_reason"))
         return
 
     # ── Энергия (обратная совместимость — /today и пр.) ─────────────────────
@@ -777,9 +709,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         val = int(data.split("_")[1])
         from db.writer import save_metrics_from_parsed as smp
         smp(tg.id, {"energy": val})
-        await query.edit_message_text(
-            f"Энергия {val}/5. Записал."
-        )
+        await query.edit_message_text(t("wf_energy_saved", val=val))
         return
 
     # ── Guided Workout Flow (wf:*) — Фаза 13.2 ───────────────────────────────
@@ -813,7 +743,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         if action == "confirm":
             await _handle_reset_confirmed_inline(query, tg.id)
         else:
-            await query.edit_message_text("Отмена. Данные не тронуты. 👍")
+            await query.edit_message_text(t("wf_cancel"))
         return
 
     # ── Пауза (stop:*) — Фаза 11 ─────────────────────────────────────────────
@@ -828,7 +758,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # ── Прочие ───────────────────────────────────────────────────────────────
-    await query.edit_message_text("Принято.")
+    await query.edit_message_text(t("wf_accepted"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -900,7 +830,7 @@ async def _handle_checkin_callback(query, ctx, tg, data: str) -> None:
 
     user = get_user(tg.id)
     if not user:
-        await query.edit_message_text("Напиши /start чтобы начать.")
+        await query.edit_message_text(t("today_no_profile"))
         return
 
     # ── Утро: сон ──────────────────────────────────────────────────────────
@@ -908,8 +838,7 @@ async def _handle_checkin_callback(query, ctx, tg, data: str) -> None:
         hours = int(value)
         save_metrics_from_parsed(tg.id, {"sleep_hours": float(hours)})
         await query.edit_message_text(
-            f"😴 Записал: {hours}ч сна.\n\n"
-            f"Как самочувствие сейчас?",
+            t("checkin_sleep_saved", hours=hours),
             reply_markup=kb_checkin_wellbeing(),
         )
         return
@@ -919,10 +848,8 @@ async def _handle_checkin_callback(query, ctx, tg, data: str) -> None:
         score = int(value)
         save_metrics_from_parsed(tg.id, {"energy": score})
         labels = {2: "Так себе", 3: "Нормально", 4: "Хорошо", 5: "Отлично"}
-        label = labels.get(score, "Ок")
-        await query.edit_message_text(
-            f"✅ {label}! Записал.\n\nОтличного дня, работаем! 💪"
-        )
+        label = labels.get(score, t("ci_well_ok"))
+        await query.edit_message_text(t("checkin_wellbeing_saved", label=label))
         return
 
     # ── Тренировка: ci:wk:done / ci:wk:no / ci:wk:skip ───────────────────
@@ -953,17 +880,17 @@ async def _handle_checkin_callback(query, ctx, tg, data: str) -> None:
                     (today_workout["id"],)
                 )
                 conn.commit()
-            await query.edit_message_text("✅ Тренировка записана! Молодец! 💪")
+            await query.edit_message_text(t("checkin_workout_done"))
         elif value == "no":
-            await query.edit_message_text("Ничего, бывает. Завтра наверстаем!")
+            await query.edit_message_text(t("checkin_workout_no"))
         elif value == "skip":
-            await query.edit_message_text("⏭ Пропуск записан. Отдых тоже важен.")
+            await query.edit_message_text(t("checkin_workout_skipped"))
 
         # Шаг 2: спрашиваем про еду
         import asyncio
         await asyncio.sleep(1)
         await query.message.reply_text(
-            "Что ел сегодня?",
+            t("checkin_food_prompt"),
             reply_markup=kb_checkin_food_skip(),
         )
         ctx.user_data["checkin_flow"] = {"step": "awaiting_food", "slot": checkin_slot}
@@ -974,7 +901,7 @@ async def _handle_checkin_callback(query, ctx, tg, data: str) -> None:
     if action == "food" and value == "skip":
         slot = ctx.user_data.get("checkin_flow", {}).get("slot", "")
         ctx.user_data.pop("checkin_flow", None)
-        await query.edit_message_text("👌 Ок, пропускаем.")
+        await query.edit_message_text(t("checkin_food_skip"))
 
         # Если ночной чек-ин — отправляем итог дня
         if slot == "night":
@@ -1015,14 +942,9 @@ async def _handle_checkin_food_text(update, ctx, tg, text: str) -> None:
         f = parsed.get("fat_g", 0)
         c = parsed.get("carbs_g", 0)
         notes = parsed.get("meal_notes", "")
-        await update.message.reply_text(
-            f"🍽 Записал: {notes}\n"
-            f"📊 {cal} ккал (Б{p} Ж{f} У{c})"
-        )
+        await update.message.reply_text(t("checkin_food_saved", notes=notes, cal=cal, p=p, f=f, c=c))
     else:
-        await update.message.reply_text(
-            "👌 Ок, ничего не записываю."
-        )
+        await update.message.reply_text(t("checkin_food_nothing"))
 
     # Действия после записи еды
     if slot == "night":
@@ -1052,17 +974,13 @@ async def _handle_workout_flow(query, ctx, tg, data: str) -> None:
         if value == "custom":
             wf["awaiting_custom_duration"] = True
             ctx.user_data["workout_flow"] = wf
-            await query.edit_message_text(
-                "⏱ Напиши длительность в минутах (например: 50):"
-            )
+            await query.edit_message_text(t("wf_dur_prompt"))
             return
         wf["duration_min"] = int(value)
         wf.pop("awaiting_custom_duration", None)
         ctx.user_data["workout_flow"] = wf
         await query.edit_message_text(
-            f"⏱ {value} мин — записал.\n\n"
-            "Оцени интенсивность (RPE 1-10):\n"
-            "_1 = прогулка, 5 = обычная, 10 = максимум_",
+            t("wf_dur_done", dur=value),
             parse_mode="Markdown",
             reply_markup=kb_workout_rpe()
         )
@@ -1072,24 +990,23 @@ async def _handle_workout_flow(query, ctx, tg, data: str) -> None:
         wf["intensity"] = int(value)
         ctx.user_data["workout_flow"] = wf
         await query.edit_message_text(
-            f"💥 RPE {value}/10.\n\nКак ощущения?",
+            t("wf_rpe_done", val=value),
             reply_markup=kb_workout_feeling()
         )
 
     # ── Шаг 3: ощущения ───────────────────────────────────────────────────
     elif step == "feel":
         feeling_map = {
-            "great": "отлично 💪",
-            "ok":    "нормально 😐",
-            "hard":  "тяжело 😓",
-            "pain":  "боль/дискомфорт 🤕",
+            "great": t("feel_great"),
+            "ok":    t("feel_ok"),
+            "hard":  t("feel_hard"),
+            "pain":  t("feel_pain"),
         }
         wf["feeling"] = feeling_map.get(value, value)
         wf["feeling_key"] = value
         ctx.user_data["workout_flow"] = wf
         await query.edit_message_text(
-            f"Ощущения: {wf['feeling']}.\n\n"
-            "Хочешь добавить комментарий? Напиши или нажми кнопку:",
+            t("wf_feel_done", feel=wf["feeling"]),
             reply_markup=kb_workout_comment()
         )
 
@@ -1109,11 +1026,11 @@ async def _save_workout_from_flow(query, ctx, tg, wf: dict) -> None:
 
     user = _get_user(tg.id)
     if not user:
-        await query.edit_message_text("❌ Профиль не найден. Напиши /start")
+        await query.edit_message_text(t("wf_no_profile"))
         return
 
     today = _dt.date.today().isoformat()
-    label = wf.get("label", "тренировка")
+    label = wf.get("label", t("history_workout_default"))
     workout_type = wf.get("workout_type", "strength")
     duration_min = wf.get("duration_min")
     intensity = wf.get("intensity")
@@ -1139,7 +1056,7 @@ async def _save_workout_from_flow(query, ctx, tg, wf: dict) -> None:
         )
     except Exception as e:
         logger.error(f"[WF] log_workout failed for {tg.id}: {e}")
-        await query.edit_message_text("❌ Не удалось записать тренировку. Попробуй ещё раз.")
+        await query.edit_message_text(t("wf_save_error"))
         return
 
     # Синхронизируем план — помечаем день как выполненный (Фаза 15.1)
@@ -1174,10 +1091,7 @@ async def _save_workout_from_flow(query, ctx, tg, wf: dict) -> None:
     # Если боль — запросить подробности
     if wf.get("feeling_key") == "pain":
         await query.edit_message_text(
-            f"✅ Тренировка записана! +{xp_awarded} XP\n\n"
-            "⚠️ Ты отметил боль/дискомфорт.\n"
-            "Расскажи подробнее — что и где болит?\n"
-            "_Важно для корректировки плана._",
+            t("wf_saved_pain", xp=xp_awarded),
             parse_mode="Markdown"
         )
         return
@@ -1189,10 +1103,7 @@ async def _save_workout_from_flow(query, ctx, tg, wf: dict) -> None:
         summary += f" · RPE {intensity}/10"
 
     await query.edit_message_text(
-        f"✅ Тренировка записана! +{xp_awarded} XP 🎉\n\n"
-        f"{summary}\n"
-        f"Ощущения: {wf.get('feeling', '—')}\n\n"
-        "Хорошая работа! 💪",
+        t("wf_saved", xp=xp_awarded, summary=summary, feel=wf.get("feeling", "—")),
         parse_mode="Markdown",
         reply_markup=kb_back_to_menu()
     )
@@ -1214,7 +1125,7 @@ async def _handle_menu_callback(
         mode_emoji = "🔥" if mode == "MAX" else "🌿"
         name = (user.get("name") or tg.first_name) if user else tg.first_name
         streak = get_streak(user["id"]) if user else 0
-        streak_str = f"🔥 {streak} дней стрик\n" if streak else ""
+        streak_str = t("menu_streak", streak=streak) if streak else ""
         xp_str = ""
         try:
             from db.queries.gamification import get_user_level_info
@@ -1224,11 +1135,11 @@ async def _handle_menu_callback(
         except Exception:
             pass
         text = (
-            f"👋 Привет, *{name}*!\n"
-            f"{mode_emoji} Режим: *{mode}*\n"
-            f"{streak_str}"
-            f"{xp_str}"
-            "\nЧто будем делать?"
+            t("menu_greeting", name=name)
+            + t("menu_mode", mode_emoji=mode_emoji, mode=mode)
+            + streak_str
+            + xp_str
+            + t("menu_what_next")
         )
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_main_menu())
@@ -1240,7 +1151,7 @@ async def _handle_menu_callback(
     # ── Статистика ──────────────────────────────────────────────────────────
     if action == "stats":
         if not user:
-            await query.answer("Нет данных. Напиши /start", show_alert=True)
+            await query.answer(t("menu_no_data"), show_alert=True)
             return
         from bot.commands import _build_stats_text
         from bot.keyboards import kb_stats_quick
@@ -1251,7 +1162,7 @@ async def _handle_menu_callback(
     # ── История (с выбором периода) ──────────────────────────────────────────
     if action in ("history", "history_7", "history_14", "history_30", "history_90"):
         if not user:
-            await query.answer("Нет данных. Напиши /start", show_alert=True)
+            await query.answer(t("menu_no_data"), show_alert=True)
             return
         days_map = {"history": 7, "history_7": 7, "history_14": 14, "history_30": 30, "history_90": 90}
         days = days_map[action]
@@ -1264,7 +1175,7 @@ async def _handle_menu_callback(
     # ── Ачивки ──────────────────────────────────────────────────────────────
     if action == "achievements":
         if not user:
-            await query.answer("Нет данных. Напиши /start", show_alert=True)
+            await query.answer(t("menu_no_data"), show_alert=True)
             return
         from db.queries.gamification import format_achievements_message
         from bot.keyboards import kb_achievements_quick
@@ -1272,7 +1183,7 @@ async def _handle_menu_callback(
             msg = format_achievements_message(user["id"])
         except Exception as e:
             logger.error(f"[MENU] achievements error: {e}")
-            msg = "⚠️ Не удалось загрузить данные. Попробуй позже."
+            msg = t("achievements_error")
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=kb_achievements_quick())
         return
 
@@ -1285,10 +1196,8 @@ async def _handle_menu_callback(
             "setup":   "/setup",
             "export":  "/export",
         }
-        await query.answer(f"Открываю {cmd_map[action]}", show_alert=False)
-        await query.message.reply_text(
-            f"Использую {cmd_map[action]} — секунду...",
-        )
+        await query.answer(t("menu_opening", cmd=cmd_map[action]), show_alert=False)
+        await query.message.reply_text(t("menu_loading", cmd=cmd_map[action]))
         # Запускаем соответствующую команду через message
         from bot import commands as cmds
         handler_map = {
@@ -1312,16 +1221,14 @@ async def _handle_menu_callback(
     # ── Календарь тренировок (Фаза 13.6) ────────────────────────────────────
     if action == "calendar":
         if not user:
-            await query.answer("Нет данных. Напиши /start", show_alert=True)
+            await query.answer(t("menu_no_data"), show_alert=True)
             return
         import json as _cj
         from db.queries.training_plan import get_active_plan
         plan = get_active_plan(user["id"])
         if not plan:
             await query.edit_message_text(
-                "📅 *Календарь тренировок*\n\n"
-                "На эту неделю план не сгенерирован.\n"
-                "Воскресным вечером Алекс составит расписание 📋",
+                t("menu_calendar_empty"),
                 parse_mode="Markdown",
                 reply_markup=kb_back_to_menu(),
             )
@@ -1329,7 +1236,7 @@ async def _handle_menu_callback(
         try:
             days_list = _cj.loads(plan["plan_json"])
         except Exception:
-            await query.answer("Ошибка чтения плана", show_alert=True)
+            await query.answer(t("menu_plan_error"), show_alert=True)
             return
 
         today_str = datetime.date.today().isoformat()
@@ -1348,8 +1255,7 @@ async def _handle_menu_callback(
             week_label = plan.get("week_start", "")
 
         lines = [
-            f"🗓 *Календарь недели* ({week_label})",
-            f"Прогресс: {workouts_done}/{workouts_total} тренировок\n",
+            t("menu_calendar_header", week=week_label, done=workouts_done, total=workouts_total),
         ]
         for day in days_list:
             dtype = day.get("type", "rest")
@@ -1375,7 +1281,7 @@ async def _handle_menu_callback(
 
             line = f"{mark} *{weekday}* {date_fmt} — {icon} {label}"
             if is_today and dtype not in ("rest", "recovery") and not completed:
-                line += " ← сегодня"
+                line += t("menu_calendar_today")
             lines.append(line)
 
             # Показываем упражнения только для сегодняшнего дня
@@ -1393,7 +1299,7 @@ async def _handle_menu_callback(
                         parts.append(f"@{weight}кг")
                     lines.append(" ".join(parts))
                 if len(exercises) > 4:
-                    lines.append(f"  • … ещё {len(exercises) - 4}")
+                    lines.append(t("menu_calendar_more", n=len(exercises) - 4))
 
         from bot.keyboards import kb_plan_quick
         await query.edit_message_text(
@@ -1403,7 +1309,7 @@ async def _handle_menu_callback(
         )
         return
 
-    await query.answer("Неизвестное действие", show_alert=True)
+    await query.answer(t("menu_unknown"), show_alert=True)
 
 
 async def _handle_adapt_callback(query, ctx, tg, data: str) -> None:
@@ -1421,31 +1327,22 @@ async def _handle_adapt_callback(query, ctx, tg, data: str) -> None:
 
     if action == "accept" and len(parts) > 2:
         adapt_type = parts[2]
-        labels = {
-            "deload": "🔴 Deload-день принят",
-            "light": "⚠️ Облегчённая тренировка принята",
-            "boost": "🔥 Усиленная тренировка принята",
+        label_keys = {
+            "deload": "adapt_deload_label",
+            "light":  "adapt_light_label",
+            "boost":  "adapt_boost_label",
         }
-        label = labels.get(adapt_type, "✅ Адаптация принята")
-        tips = {
-            "deload": (
-                "Фокус на технике, −40% рабочего веса. "
-                "Слушай тело — если RPE > 6, снижай ещё."
-            ),
-            "light": (
-                "Держим веса, −1 подход. RPE до 7. "
-                "Лучше хорошая лёгкая тренировка, чем плохая тяжёлая."
-            ),
-            "boost": (
-                "Попробуй +2.5 кг на базовых. "
-                "Если RPE > 9 — не геройствуй, вернись к плану."
-            ),
+        tip_keys = {
+            "deload": "adapt_deload_tip",
+            "light":  "adapt_light_tip",
+            "boost":  "adapt_boost_tip",
         }
-        tip = tips.get(adapt_type, "")
+        label = t(label_keys.get(adapt_type, "adapt_default_label"))
+        tip   = t(tip_keys[adapt_type]) if adapt_type in tip_keys else ""
 
         from bot.keyboards import kb_workout_done
         await query.edit_message_text(
-            f"{label}\n\n{tip}\n\nНапиши мне когда закончишь 💪",
+            t("adapt_response", label=label, tip=tip),
             parse_mode="Markdown",
             reply_markup=kb_workout_done(),
         )
@@ -1454,15 +1351,14 @@ async def _handle_adapt_callback(query, ctx, tg, data: str) -> None:
     elif action == "skip":
         from bot.keyboards import kb_workout_done
         await query.edit_message_text(
-            "💪 Ок, работаем по полному плану. Удачи!\n\n"
-            "Напиши мне когда закончишь 💪",
+            t("adapt_normal"),
             parse_mode="Markdown",
             reply_markup=kb_workout_done(),
         )
         logger.info(f"[ADAPT] User {tg.id} skipped adaptation, going full plan")
 
     else:
-        await query.answer("Неизвестное действие", show_alert=True)
+        await query.answer(t("menu_unknown"), show_alert=True)
 
 
 async def _handle_meal_callback(query, ctx, tg, action: str) -> None:
@@ -1476,7 +1372,7 @@ async def _handle_meal_callback(query, ctx, tg, action: str) -> None:
     # meal:quick — показываем меню пресетов
     if action == "quick":
         await query.edit_message_text(
-            "🍽 *Быстрый приём пищи*\n\nВыбери что ел — записываю сразу:",
+            t("meal_quick_header"),
             parse_mode="Markdown",
             reply_markup=kb_quick_meals(),
         )
@@ -1484,12 +1380,12 @@ async def _handle_meal_callback(query, ctx, tg, action: str) -> None:
 
     preset = QUICK_MEAL_PRESETS.get(action)
     if not preset:
-        await query.answer("Неизвестный пресет", show_alert=True)
+        await query.answer(t("meal_unknown_preset"), show_alert=True)
         return
 
     user = get_user(tg.id)
     if not user:
-        await query.answer("Напиши /start", show_alert=True)
+        await query.answer(t("meal_need_start"), show_alert=True)
         return
 
     try:
@@ -1507,39 +1403,37 @@ async def _handle_meal_callback(query, ctx, tg, action: str) -> None:
             new_carb = (existing.get("carbs_g")   or 0) + preset["carbs_g"]
             # Обновляем meal_notes — добавляем к списку
             prev_notes = existing.get("meal_notes") or ""
-            new_notes = f"{prev_notes}, {preset['label']}" if prev_notes else preset["label"]
+            preset_label = t(f"preset_{action}")
+            new_notes = f"{prev_notes}, {preset_label}" if prev_notes else preset_label
             log_nutrition_day(
                 user["id"], date=today,
                 calories=new_cal, protein_g=new_prot, fat_g=new_fat, carbs_g=new_carb,
                 meal_notes=new_notes,
             )
             await query.edit_message_text(
-                f"✅ *{preset['label']}* добавлен!\n\n"
-                f"Сегодня итого: *{new_cal} ккал* · Б{new_prot}г · Ж{new_fat}г · У{new_carb}г\n\n"
-                "Добавить ещё один приём?",
+                t("meal_added_total", label=preset_label, cal=new_cal, p=new_prot, f=new_fat, c=new_carb),
                 parse_mode="Markdown",
                 reply_markup=kb_quick_meals(),
             )
         else:
+            preset_label = t(f"preset_{action}")
             log_nutrition_day(
                 user["id"], date=today,
                 calories=preset["calories"],
                 protein_g=preset["protein_g"],
                 fat_g=preset["fat_g"],
                 carbs_g=preset["carbs_g"],
-                meal_notes=preset["label"],
+                meal_notes=preset_label,
             )
             await query.edit_message_text(
-                f"✅ *{preset['label']}* записан!\n\n"
-                f"*{preset['calories']} ккал* · Б{preset['protein_g']}г · Ж{preset['fat_g']}г · У{preset['carbs_g']}г\n\n"
-                "Добавить ещё один приём?",
+                t("meal_added_single", label=preset_label, cal=preset['calories'], p=preset['protein_g'], f=preset['fat_g'], c=preset['carbs_g']),
                 parse_mode="Markdown",
                 reply_markup=kb_quick_meals(),
             )
         logger.info(f"[MEAL] Preset '{action}' logged for {tg.id}")
     except Exception as e:
         logger.error(f"[MEAL] Failed to log preset '{action}' for {tg.id}: {e}")
-        await query.answer("Ошибка записи. Попробуй ещё раз.", show_alert=True)
+        await query.answer(t("meal_save_error"), show_alert=True)
 
 
 async def _handle_chart_callback(query, ctx, tg, chart_type: str) -> None:
@@ -1553,13 +1447,13 @@ async def _handle_chart_callback(query, ctx, tg, chart_type: str) -> None:
 
     user = get_user(tg.id)
     if not user:
-        await query.answer("Напиши /start", show_alert=True)
+        await query.answer(t("chart_no_profile"), show_alert=True)
         return
 
     entry = CHART_REGISTRY.get(chart_type)
     label = entry[0] if entry else chart_type
 
-    await query.answer(f"Строю {label}…")
+    await query.answer(t("chart_building", label=label))
 
     try:
         buf = build_chart(chart_type, user["id"])
@@ -1569,13 +1463,12 @@ async def _handle_chart_callback(query, ctx, tg, chart_type: str) -> None:
 
     if buf is None:
         await query.message.reply_text(
-            f"📊 Недостаточно данных для графика «{label}».\n"
-            "Продолжай тренироваться — данные накопятся! 💪",
+            t("chart_no_data", label=label),
             reply_markup=kb_stats_quick(),
         )
         return
 
-    caption = f"📊 *{label}*"
+    caption = t("chart_title", label=label)
     await query.message.reply_photo(
         photo=buf,
         caption=caption,
@@ -1593,8 +1486,7 @@ async def _handle_stop_callback(query, ctx, tg, action: str) -> None:
     if action == "indefinite":
         deactivate_user(tg.id)
         await query.edit_message_text(
-            "Поставил на паузу. 🛑\n"
-            "Напоминать не буду. Когда будешь готов — /start",
+            t("pause_done"),
             reply_markup=kb_back_to_menu(),
         )
         return
@@ -1602,7 +1494,7 @@ async def _handle_stop_callback(query, ctx, tg, action: str) -> None:
     try:
         days = int(action)
     except ValueError:
-        await query.answer("Ошибка", show_alert=True)
+        await query.answer(t("pause_error"), show_alert=True)
         return
 
     deactivate_user(tg.id)
@@ -1615,8 +1507,7 @@ async def _handle_stop_callback(query, ctx, tg, action: str) -> None:
         async def _resume(bot, telegram_id: int) -> None:
             _activate(telegram_id)
             try:
-                await bot.send_message(chat_id=telegram_id,
-                                       text="⏰ Пауза закончилась! Возобновляю работу. /start")
+                await bot.send_message(chat_id=telegram_id, text=t("stop_resumed"))
             except Exception:
                 pass
 
@@ -1630,9 +1521,7 @@ async def _handle_stop_callback(query, ctx, tg, action: str) -> None:
 
     resume_str = resume_at.strftime("%d.%m.%Y")
     await query.edit_message_text(
-        f"Поставил на паузу на *{days} дн.* 🛑\n"
-        f"Автоматически вернусь *{resume_str}*.\n"
-        "Если раньше — /start",
+        t("stop_confirmed", days=days, resume_str=resume_str),
         parse_mode="Markdown",
         reply_markup=kb_back_to_menu(),
     )
@@ -1643,7 +1532,7 @@ async def _handle_reset_confirmed_inline(query, telegram_id: int) -> None:
     conn = get_connection()
     user = get_user(telegram_id)
     if not user:
-        await query.edit_message_text("Данных не найдено.")
+        await query.edit_message_text(t("reset_no_data"))
         return
     uid = user["id"]
     tables = [
@@ -1662,9 +1551,7 @@ async def _handle_reset_confirmed_inline(query, telegram_id: int) -> None:
     except Exception:
         pass
     conn.commit()
-    await query.edit_message_text(
-        "✅ Все данные удалены.\nНапиши /start чтобы начать заново."
-    )
+    await query.edit_message_text(t("reset_done"))
 
 
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1675,19 +1562,16 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
 
     if not OPENAI_API_KEY:
-        await update.message.reply_text(
-            "🎤 Голосовые сообщения пока не настроены. "
-            "Добавь OPENAI_API_KEY в .env чтобы включить расшифровку."
-        )
+        await update.message.reply_text(t("voice_no_key"))
         return
 
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Напиши /start чтобы начать.")
+        await update.message.reply_text(t("voice_no_profile"))
         return
 
     # ── Скачиваем голосовой файл ──────────────────────────────────────────────
-    await update.message.reply_text("🎤 Слушаю...")
+    await update.message.reply_text(t("voice_listening"))
     voice_file = await update.message.voice.get_file()
 
     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
@@ -1707,15 +1591,15 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
         text = transcript.text.strip()
         if not text:
-            await update.message.reply_text("Не удалось распознать. Попробуй ещё раз.")
+            await update.message.reply_text(t("voice_failed"))
             return
 
         # ── Показываем что расслышали ─────────────────────────────────────────
-        await update.message.reply_text(f"🎤 _«{text}»_", parse_mode="Markdown")
+        await update.message.reply_text(t("voice_transcript", text=text), parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"Whisper error for {tg.id}: {e}")
-        await update.message.reply_text("⚠️ Ошибка распознавания голоса.")
+        await update.message.reply_text(t("voice_error"))
         return
     finally:
         try:
@@ -1741,14 +1625,14 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Напиши /start чтобы начать.")
+        await update.message.reply_text(t("photo_no_profile"))
         return
 
     # Берём самое большое фото из набора
     photo = update.message.photo[-1]
     caption = (update.message.caption or "").strip()
 
-    status_msg = await update.message.reply_text("📸 Анализирую фото...")
+    status_msg = await update.message.reply_text(t("photo_analyzing"))
 
     try:
         photo_file = await photo.get_file()
@@ -1842,7 +1726,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
             if nut:
                 save_nutrition_from_parsed(tg.id, nut)
-                reply_text += "\n\n✅ _КБЖУ записаны в журнал_"
+                reply_text += "\n\n" + t("photo_saved")
                 logger.info(f"[VISION] food KBJU saved for {tg.id}: {nut}")
 
         await status_msg.edit_text(reply_text, parse_mode="Markdown")
@@ -1851,9 +1735,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     except Exception as e:
         logger.error(f"[VISION] error for {tg.id}: {e}")
-        await status_msg.edit_text(
-            "⚠️ Не удалось проанализировать фото. Попробуй ещё раз."
-        )
+        await status_msg.edit_text(t("photo_error"))
 
 
 # _handle_reset_confirmed removed in Фаза 11 — replaced by _handle_reset_confirmed_inline
