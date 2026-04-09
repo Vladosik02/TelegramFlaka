@@ -28,10 +28,10 @@ from bot.keyboards import (
     kb_checkin_workout_done, kb_checkin_food_skip,
     kb_reminder,
 )
-from lang import t, t_list
 from config import (
     SCHEDULE_LIGHT_MORNING_WINDOW, SCHEDULE_LIGHT_AFTERNOON_WINDOW,
     SILENCE_AFTER_DAYS, SOFT_START_DAYS,
+    MORNING_FACTS, HABIT_FACTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ async def send_morning_checkin(bot: Bot, telegram_id: int) -> None:
 
     name = user.get("name") or "Атлет"
     streak = get_streak(user["id"])
-    fact = random.choice(t_list("morning_facts"))
+    fact = random.choice(MORNING_FACTS)
 
     # ── Погода (scheduler/weather.py) ────────────────────────────────────
     weather_line = ""
@@ -116,9 +116,14 @@ async def send_morning_checkin(bot: Bot, telegram_id: int) -> None:
     except Exception as e:
         logger.warning(f"[CHECKIN] Weather failed for {telegram_id}: {e}")
 
-    streak_text = t("sched_morning_streak", streak=streak) if streak > 0 else ""
-    weather_block = f"\n🌤 {weather_line}" if weather_line else ""
-    text = t("sched_morning", name=name, streak_text=streak_text, fact=fact, weather_block=weather_block)
+    streak_text = f"  Стрик: {streak} дн." if streak > 0 else ""
+    weather_block = f"\n🌤 {weather_line}\n" if weather_line else ""
+    text = (
+        f"Доброе утро, {name}!{streak_text}\n"
+        f"{weather_block}\n"
+        f"💡 {fact}\n\n"
+        f"Сколько часов спал сегодня?"
+    )
     await bot.send_message(
         chat_id=telegram_id,
         text=text,
@@ -140,11 +145,16 @@ async def send_afternoon_checkin(bot: Bot, telegram_id: int) -> None:
         return
 
     today = datetime.date.today()
-    day_name = t(f"weekday_{today.weekday()}").capitalize()
+    day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    day_name = day_names[today.weekday()]
     date_str = today.strftime("%d.%m")
-    fact = random.choice(t_list("habit_facts"))
+    fact = random.choice(HABIT_FACTS)
 
-    text = t("sched_afternoon", day_name=day_name, date_str=date_str, fact=fact)
+    text = (
+        f"📅 {day_name}, {date_str}\n\n"
+        f"Что ел сегодня? Напиши что было на завтрак/обед.\n\n"
+        f"⚠️ {fact}"
+    )
     await bot.send_message(
         chat_id=telegram_id,
         text=text,
@@ -166,10 +176,10 @@ async def send_afternoon_workout_reminder(bot: Bot, telegram_id: int, user_id: i
     if wtype in ("rest", "recovery", None):
         await bot.send_message(
             chat_id=telegram_id,
-            text=t("sched_rest_day"),
+            text="🌿 Сегодня день отдыха по плану. Отдыхай!",
         )
         return
-    label = plan_workout.get("label") or plan_workout.get("type") or t("history_workout_default")
+    label = plan_workout.get("label") or plan_workout.get("type") or "тренировка"
     exercises = plan_workout.get("exercises") or []
     ex_lines = []
     for ex in exercises[:5]:
@@ -180,13 +190,13 @@ async def send_afternoon_workout_reminder(bot: Bot, telegram_id: int, user_id: i
         if ex.get("sets") and ex.get("reps"):
             parts.append(f"{ex['sets']}×{ex['reps']}")
         if ex.get("weight_kg_target"):
-            parts.append(f"@ {ex['weight_kg_target']} {t('history_unit_kg')}")
+            parts.append(f"@ {ex['weight_kg_target']} кг")
         ex_lines.append(" ".join(parts))
     ex_text = "\n".join(ex_lines) if ex_lines else ""
-    text = t("sched_plan_today", label=label)
+    text = f"🏋️ Сегодня по плану: {label}"
     if ex_text:
         text += f"\n\n{ex_text}"
-    text += "\n\n" + t("sched_good_workout")
+    text += "\n\nУдачной тренировки!"
     await bot.send_message(chat_id=telegram_id, text=text)
 
 
@@ -200,9 +210,10 @@ async def send_evening_checkin(bot: Bot, telegram_id: int) -> None:
     if not user or not user["active"]:
         return
 
+    text = "Как прошёл день? Сделал тренировку? 💪"
     await bot.send_message(
         chat_id=telegram_id,
-        text=t("sched_evening_how"),
+        text=text,
         reply_markup=kb_checkin_workout_done(),
     )
     from bot.handlers import _CHECKIN_SLOT
@@ -232,18 +243,20 @@ async def send_night_checkin(bot: Bot, telegram_id: int) -> None:
 
     if not workout_done:
         # Спрашиваем про тренировку
+        text = "🌙 Вечер! Тренировался сегодня?"
         await bot.send_message(
             chat_id=telegram_id,
-            text=t("sched_evening_workout"),
+            text=text,
             reply_markup=kb_checkin_workout_done(),
         )
         from bot.handlers import _CHECKIN_SLOT
         _CHECKIN_SLOT[telegram_id] = "night"
     else:
         # Тренировка уже записана — сразу про еду
+        text = "🌙 Вечер! Что ел за ужин/вечер?"
         await bot.send_message(
             chat_id=telegram_id,
-            text=t("sched_evening_food"),
+            text=text,
             reply_markup=kb_checkin_food_skip(),
         )
         from bot.handlers import _AWAITING_FOOD
@@ -261,26 +274,23 @@ async def send_night_summary(bot: Bot, telegram_id: int, user_id: int) -> None:
     metrics_list = get_metrics_range(user_id, days=1)
     metrics = metrics_list[0] if metrics_list else None
 
-    parts = [t("sched_day_summary")]
+    parts = ["📊 Итог дня:"]
     if nutrition and nutrition.get("calories"):
         n = nutrition
-        parts.append(t(
-            "sched_nutrition_fmt",
-            cal=n["calories"],
-            p=n.get("protein_g", 0),
-            f=n.get("fat_g", 0),
-            c=n.get("carbs_g", 0),
-        ))
+        parts.append(
+            f"🍽 {n['calories']} ккал"
+            f" (Б{n.get('protein_g', 0)} Ж{n.get('fat_g', 0)} У{n.get('carbs_g', 0)})"
+        )
     else:
-        parts.append(t("sched_no_nutrition"))
+        parts.append("🍽 Питание не записано")
 
     if today_workout and today_workout.get("completed"):
-        parts.append(t("sched_workout_done"))
+        parts.append("✅ Тренировка выполнена")
     else:
-        parts.append(t("sched_workout_not_done"))
+        parts.append("❌ Тренировка не выполнена")
 
     if metrics and metrics.get("sleep_hours"):
-        parts.append(t("sched_sleep_fmt", hours=metrics["sleep_hours"]))
+        parts.append(f"😴 Сон: {metrics['sleep_hours']}ч")
 
     # Контекстный мини-урок (teach moment)
     from scheduler.teach_moments import select_teach_moment
@@ -297,7 +307,7 @@ async def send_night_summary(bot: Bot, telegram_id: int, user_id: int) -> None:
     if teach:
         parts.append(f"\n💡 {teach}")
 
-    parts.append("\n" + t("sched_good_night"))
+    parts.append("\nСпокойной ночи! 🌙")
 
     await bot.send_message(chat_id=telegram_id, text="\n".join(parts))
 
@@ -335,7 +345,7 @@ async def send_snooze_reminder(bot: Bot, telegram_id: int) -> None:
     try:
         await bot.send_message(
             chat_id=telegram_id,
-            text=t("sched_remind_30min"),
+            text="⏰ Прошло 30 минут. Ещё не поздно потренироваться! 💪",
             reply_markup=kb_reminder(),
         )
         logger.info(f"Snooze reminder sent to {telegram_id}")
@@ -354,7 +364,7 @@ async def check_and_send_reminders(bot: Bot) -> None:
             try:
                 await bot.send_message(
                     chat_id=user["telegram_id"],
-                    text=t("sched_remind_workout"),
+                    text="⏰ Ещё не было тренировки. Как дела?",
                     reply_markup=kb_reminder()
                 )
                 mark_reminder_sent(reminder["id"])
@@ -673,11 +683,11 @@ async def broadcast_l4_intelligence(bot=None) -> None:
                     digest = l4.get("weekly_digest") if l4 else None
                     trend  = l4.get("trend_summary") if l4 else None
                     if digest:
-                        lines = [t("sched_weekly_header")]
+                        lines = ["📊 *Недельный дайджест от Алекса*\n"]
                         lines.append(digest)
                         if trend:
-                            lines.append("\n" + t("sched_weekly_trend", trend=trend))
-                        lines.append("\n" + t("sched_weekly_footer"))
+                            lines.append(f"\n📈 _{trend}_")
+                        lines.append("\n_Хорошей недели! 💪_")
                         await bot.send_message(
                             chat_id=user["telegram_id"],
                             text="\n".join(lines),
@@ -1468,7 +1478,7 @@ async def generate_weekly_plan_for_user(uid: int, telegram_id: int, bot) -> None
     try:
         await bot.send_message(
             chat_id=telegram_id,
-            text=t("sched_new_plan", msg=msg),
+            text=f"📅 Новый план тренировок на неделю!\n\n{msg}",
             parse_mode="Markdown",
         )
         logger.info(f"[PLAN] Sent plan_id={plan_id} to {telegram_id}")
@@ -1531,7 +1541,7 @@ async def send_pre_workout_reminder(bot: Bot, telegram_id: int) -> None:
     }
     icon = type_icons.get(dtype, "🏋️")
 
-    lines = [t("sched_preworkout", icon=icon, label=label)]
+    lines = [f"⏰ *Сегодня тренировка!*\n{icon} *{label}*\n"]
 
     if exercises:
         for ex in exercises[:5]:
@@ -1547,12 +1557,12 @@ async def send_pre_workout_reminder(bot: Bot, telegram_id: int) -> None:
             if sets and reps:
                 parts.append(f"{sets}×{reps}")
             if weight:
-                parts.append(f"@ {weight} {t('history_unit_kg')}")
+                parts.append(f"@ {weight} кг")
             if note:
                 parts.append(f"_{note}_")
             lines.append(" ".join(parts))
         if len(exercises) > 5:
-            lines.append(t("sched_preworkout_more", n=len(exercises) - 5))
+            lines.append(f"• … ещё {len(exercises) - 5} упражнений")
 
     ai_note = today_day.get("ai_note", "")
     if ai_note:
@@ -1657,7 +1667,7 @@ async def send_pre_workout_reminder(bot: Bot, telegram_id: int) -> None:
     except Exception as we:
         logger.debug(f"[PRE_WORKOUT] weather hint failed: {we}")
 
-    lines.append("\n" + t("sched_preworkout_go"))
+    lines.append("\nНапиши мне когда закончишь 💪")
     text = "\n".join(lines)
 
     try:
@@ -1779,7 +1789,12 @@ async def broadcast_streak_protection(bot: Bot) -> None:
             if done_today and done_today["cnt"] > 0:
                 continue   # тренировка уже есть, всё хорошо
 
-            msg = t("sched_streak_alert", streak=streak)
+            msg = (
+                f"🔥 *Стрик {streak} дней под угрозой!*\n\n"
+                f"Ты тренировался {streak} дней подряд — не ломай цепочку сегодня!\n"
+                f"Даже короткая тренировка засчитается. 💪\n\n"
+                f"_Осталось несколько часов — успеешь!_"
+            )
             await bot.send_message(
                 chat_id=user["telegram_id"],
                 text=msg,
