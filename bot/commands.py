@@ -28,38 +28,14 @@ from bot.keyboards import (
     kb_achievements_quick, kb_history_period, kb_plan_quick,
     kb_reset_confirm, kb_back_to_menu,
 )
+from lang import t
 
 logger = logging.getLogger(__name__)
 
 
 # ─── Текст помощи ─────────────────────────────────────────────────────────────
-HELP_TEXT = """
-🤖 *Персональный тренер Алекс*
-
-*Команды:*
-/menu — главное меню (быстрый доступ)
-/start — начать или возобновить
-/stop — поставить на паузу
-/profile — твой профиль и данные
-/stats — статистика за неделю
-/history — хроника за последние N дней
-/test — фитнес-тест (отжимания, приседания, планка)
-/plan — план тренировок на эту неделю
-/workout — тренировка на сегодня (с учётом оборудования и истории)
-/achievements — уровень, XP и ачивки ⚡
-/mode — текущий режим (MAX/LIGHT)
-/setup — изменить расписание и предпочтения
-/meal — записать КБЖУ приёма пищи
-/export — скачать историю тренировок CSV
-/costs — расходы на AI ($)
-/help — эта справка
-/reset — сбросить все данные ⚠️
-
-_Просто пиши мне — я отвечу как тренер._
-_Новый план генерируется каждое воскресенье в 20:00._
-"""
-
-ADMIN_HELP_TEXT = "\n/admin — панель администратора 🛠"
+HELP_TEXT = t("help_text")
+ADMIN_HELP_TEXT = "\n" + t("admin_help")
 
 
 # ─── /menu — главное меню ─────────────────────────────────────────────────────
@@ -83,11 +59,11 @@ async def cmd_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     streak_str = f"🔥 {streak} дней стрик\n" if streak else ""
 
     text = (
-        f"👋 Привет, *{name}*!\n"
-        f"{mode_emoji} Режим сегодня: *{mode}*\n"
-        f"{streak_str}"
-        f"{level_str}"
-        "\nЧто будем делать?"
+        t("menu_greeting", name=name)
+        + t("menu_mode", mode_emoji=mode_emoji, mode=mode)
+        + streak_str
+        + level_str
+        + t("menu_what_next")
     )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb_main_menu())
 
@@ -110,9 +86,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         streak = get_streak(user["id"])
         streak_str = f"\n🔥 Стрик: *{streak} дней*" if streak else ""
         await update.message.reply_text(
-            f"Привет, *{user['name'] or tg.first_name}*! Ты уже активен.\n"
-            f"{mode_emoji} Режим: *{mode}*{streak_str}\n\n"
-            "Используй /menu для быстрого доступа ко всем функциям.",
+            t("start_active", name=user['name'] or tg.first_name,
+              mode_emoji=mode_emoji, mode=mode, streak_str=streak_str),
             parse_mode="Markdown",
             reply_markup=kb_main_menu(),
         )
@@ -121,8 +96,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if user:
         activate_user(tg.id)
         await update.message.reply_text(
-            f"С возвращением, *{user['name'] or tg.first_name}*! 💪\n"
-            f"Продолжаем. Режим: *{get_trainer_mode()}*",
+            t("start_return", name=user['name'] or tg.first_name, mode=get_trainer_mode()),
             parse_mode="Markdown",
             reply_markup=kb_main_menu(),
         )
@@ -131,10 +105,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     # Новый пользователь — онбординг
     create_user(tg.id, name=tg.first_name)
     await update.message.reply_text(
-        f"Привет, *{tg.first_name}*! 💪\n\n"
-        "Я твой персональный тренер *Алекс*. Буду напоминать о тренировках, "
-        "отслеживать прогресс и помогать не сдаваться.\n\n"
-        "Для начала — какая у тебя *главная цель*?",
+        t("start_new", name=tg.first_name),
         parse_mode="Markdown",
         reply_markup=kb_goal(),
     )
@@ -171,8 +142,7 @@ async def cmd_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         # Показываем меню выбора паузы
         from bot.keyboards import kb_stop_quick
         await update.message.reply_text(
-            "На сколько поставить на паузу?\n\n"
-            "_Или напиши /stop [N] — например `/stop 7` для паузы на 7 дней_",
+            t("stop_prompt"),
             parse_mode="Markdown",
             reply_markup=kb_stop_quick(),
         )
@@ -192,7 +162,7 @@ async def _apply_stop(update, ctx, tg, days: int) -> None:
             try:
                 await bot.send_message(
                     chat_id=telegram_id,
-                    text="⏰ Пауза закончилась! Возобновляю работу. Как ты? /start",
+                    text=t("stop_resumed"),
                 )
             except Exception:
                 pass
@@ -206,16 +176,13 @@ async def _apply_stop(update, ctx, tg, days: int) -> None:
         )
         resume_str = resume_at.strftime("%d.%m.%Y")
         await update.message.reply_text(
-            f"Поставил на паузу на *{days} дн.* 🛑\n"
-            f"Автоматически вернусь *{resume_str}*.\n"
-            "Если раньше — /start",
+            t("stop_confirmed", days=days, resume_str=resume_str),
             parse_mode="Markdown",
             reply_markup=kb_back_to_menu(),
         )
     else:
         await update.message.reply_text(
-            f"Поставил на паузу на *{days} дн.* 🛑\n"
-            "Когда будешь готов — /start",
+            t("stop_confirmed_forever", days=days),
             parse_mode="Markdown",
             reply_markup=kb_back_to_menu(),
         )
@@ -241,21 +208,21 @@ def _build_stats_text(user: dict) -> str:
     bar = "█" * filled + "░" * (10 - filled)
 
     return (
-        f"📊 *Статистика {user['name'] or 'атлета'}*\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "*Эта неделя:*\n"
-        f"`[{bar}]` {done}/{total} тренировок\n"
-        f"• Ср. интенсивность: *{weekly['avg_intensity']}/10*\n"
-        f"• Всего минут: *{weekly['total_minutes']}*\n"
-        f"• Ср. сон: *{weekly['avg_sleep']} ч*\n"
-        f"• Ср. энергия: *{weekly['avg_energy']}/5*\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "*За всё время:*\n"
-        f"• Тренировок: *{alltime['done_workouts']}*\n"
-        f"• Минут: *{alltime['total_minutes']}*\n"
-        f"• Стрик: 🔥 *{streak} дней*\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        f"{mode_emoji} Режим сегодня: *{mode}*"
+        t("stats_header", name=user['name'] or 'атлет')
+        + "━━━━━━━━━━━━━━━━━\n"
+        + t("stats_week")
+        + t("stats_bar", bar=bar, done=done, total=total)
+        + t("stats_intensity", val=weekly['avg_intensity'])
+        + t("stats_minutes", val=weekly['total_minutes'])
+        + t("stats_sleep", val=weekly['avg_sleep'])
+        + t("stats_energy", val=weekly['avg_energy'])
+        + "━━━━━━━━━━━━━━━━━\n"
+        + t("stats_alltime")
+        + t("stats_total_workouts", val=alltime['done_workouts'])
+        + t("stats_total_minutes", val=alltime['total_minutes'])
+        + t("stats_streak", val=streak)
+        + "━━━━━━━━━━━━━━━━━\n"
+        + t("stats_mode", mode_emoji=mode_emoji, mode=mode)
     )
 
 
@@ -263,7 +230,7 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
+        await update.message.reply_text(t("plan_no_profile"))
         return
     text = _build_stats_text(user)
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb_stats_quick())
@@ -275,19 +242,15 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     mode = get_trainer_mode()
     today = datetime.date.today()
     emoji = "🔥" if mode == "MAX" else "🌿"
-    desc = (
-        "Жёсткое расписание. Тренировка обязательна."
-        if mode == "MAX"
-        else "Мягкий режим. Активность по желанию."
-    )
+    desc = t("mode_max_desc") if mode == "MAX" else t("mode_light_desc")
     next_day = today + datetime.timedelta(days=1)
     next_mode = get_trainer_mode(next_day.day)
     next_emoji = "🔥" if next_mode == "MAX" else "🌿"
 
     await update.message.reply_text(
-        f"{emoji} Сегодня *{mode}*-день ({today.strftime('%d.%m')})\n"
-        f"{desc}\n\n"
-        f"Завтра: {next_emoji} *{next_mode}*",
+        t("mode_today", emoji=emoji, mode=mode, date=today.strftime('%d.%m'))
+        + f"{desc}\n\n"
+        + t("mode_tomorrow", emoji=next_emoji, mode=next_mode),
         parse_mode="Markdown",
         reply_markup=kb_back_to_menu(),
     )
@@ -312,11 +275,10 @@ async def cmd_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Сначала напиши /start")
+        await update.message.reply_text(t("test_no_profile"))
         return
     await update.message.reply_text(
-        "🔧 *Обновим настройки тренировок*\n\n"
-        "Когда тебе удобнее тренироваться?",
+        t("setup_prompt"),
         parse_mode="Markdown",
         reply_markup=kb_workout_time(),
     )
@@ -324,45 +286,38 @@ async def cmd_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ─── /meal ───────────────────────────────────────────────────────────────────
 
-_MEAL_USAGE = (
-    "Формат: `/meal [название] [ккал]ккал Б[белки] Ж[жиры] У[углеводы]`\n"
-    "Примеры:\n"
-    "`/meal овсянка 350ккал Б12 Ж6 У60`\n"
-    "`/meal итого дня 2100ккал Б150 Ж70 У210`\n"
-    "`/meal 500ккал Б30 Ж20 У50`\n\n"
-    "_Все поля опциональны — указывай что есть._"
-)
+_MEAL_USAGE = t("meal_usage")
 
 
 def _parse_meal_args(args_text: str) -> dict:
     result = {}
-    t = args_text.strip()
+    txt = args_text.strip()
 
-    cal = re.search(r'(\d{3,5})\s*ккал', t, re.IGNORECASE)
+    cal = re.search(r'(\d{3,5})\s*ккал', txt, re.IGNORECASE)
     if cal:
         val = int(cal.group(1))
         if 50 <= val <= 10000:
             result["calories"] = val
 
-    prot = re.search(r'[Бб]\s*(\d+(?:[.,]\d+)?)', t)
+    prot = re.search(r'[Бб]\s*(\d+(?:[.,]\d+)?)', txt)
     if prot:
         val = float(prot.group(1).replace(",", "."))
         if 0 <= val <= 500:
             result["protein_g"] = val
 
-    fat = re.search(r'[Жж]\s*(\d+(?:[.,]\d+)?)', t)
+    fat = re.search(r'[Жж]\s*(\d+(?:[.,]\d+)?)', txt)
     if fat:
         val = float(fat.group(1).replace(",", "."))
         if 0 <= val <= 500:
             result["fat_g"] = val
 
-    carbs = re.search(r'[Уу]\s*(\d+(?:[.,]\d+)?)', t)
+    carbs = re.search(r'[Уу]\s*(\d+(?:[.,]\d+)?)', txt)
     if carbs:
         val = float(carbs.group(1).replace(",", "."))
         if 0 <= val <= 1000:
             result["carbs_g"] = val
 
-    water = re.search(r'[Вв]\s*(\d+(?:[.,]\d+)?)\s*(л|мл)?', t)
+    water = re.search(r'[Вв]\s*(\d+(?:[.,]\d+)?)\s*(л|мл)?', txt)
     if water:
         amount = float(water.group(1).replace(",", "."))
         unit = (water.group(2) or "мл").lower()
@@ -373,7 +328,7 @@ def _parse_meal_args(args_text: str) -> dict:
     name_text = re.sub(
         r'\d{3,5}\s*ккал|[БбЖжУуВв]\s*\d+(?:[.,]\d+)?(?:\s*(?:л|мл))?'
         r'|\d+\s*(?:г|кг|мл|л)',
-        '', t, flags=re.IGNORECASE
+        '', txt, flags=re.IGNORECASE
     ).strip(" /")
     name_text = re.sub(r'\s{2,}', ' ', name_text).strip()
     if name_text:
@@ -386,7 +341,7 @@ async def cmd_meal(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Нет профиля. Напиши /start")
+        await update.message.reply_text(t("meal_no_profile"))
         return
 
     args_text = " ".join(ctx.args) if ctx.args else ""
@@ -396,22 +351,21 @@ async def cmd_meal(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     parsed = _parse_meal_args(args_text)
     if not any(k in parsed for k in ("calories", "protein_g", "fat_g", "carbs_g")):
-        await update.message.reply_text("Не нашёл КБЖУ. " + _MEAL_USAGE, parse_mode="Markdown")
+        await update.message.reply_text(t("meal_not_parsed") + _MEAL_USAGE, parse_mode="Markdown")
         return
 
     save_nutrition_from_parsed(tg.id, parsed)
 
     parts = []
-    if "calories" in parsed:   parts.append(f"*{parsed['calories']} ккал*")
-    if "protein_g" in parsed:  parts.append(f"Б {int(parsed['protein_g'])}г")
-    if "fat_g" in parsed:      parts.append(f"Ж {int(parsed['fat_g'])}г")
-    if "carbs_g" in parsed:    parts.append(f"У {int(parsed['carbs_g'])}г")
-    if "water_ml" in parsed:   parts.append(f"В {parsed['water_ml']}мл")
+    if "calories" in parsed:   parts.append(t("meal_kcal", val=parsed['calories']))
+    if "protein_g" in parsed:  parts.append(t("meal_protein", val=int(parsed['protein_g'])))
+    if "fat_g" in parsed:      parts.append(t("meal_fat", val=int(parsed['fat_g'])))
+    if "carbs_g" in parsed:    parts.append(t("meal_carbs", val=int(parsed['carbs_g'])))
+    if "water_ml" in parsed:   parts.append(t("meal_water", val=parsed['water_ml']))
 
     name_prefix = f"_{parsed['meal_notes']}_ — " if "meal_notes" in parsed else ""
     await update.message.reply_text(
-        f"✅ Записал: {name_prefix}{', '.join(parts)}\n"
-        "_КБЖУ добавлены к сегодняшнему рациону._",
+        t("meal_saved", parts=name_prefix + ', '.join(parts)),
         parse_mode="Markdown",
         reply_markup=kb_back_to_menu(),
     )
@@ -424,7 +378,7 @@ async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
+        await update.message.reply_text(t("plan_no_profile"))
         return
 
     uid = user["id"]
@@ -478,7 +432,7 @@ async def cmd_profile(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
+        await update.message.reply_text(t("plan_no_profile"))
         return
 
     surface   = get_l0_surface(user["id"])
@@ -508,92 +462,94 @@ async def cmd_profile(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         pass
 
     goal_map = {
-        "похудеть":      "🔥 Похудеть",
-        "набрать массу": "💪 Набрать массу",
-        "выносливость":  "🏃 Выносливость",
-        "общая форма":   "🧘 Общая форма",
+        "lose_weight":      t("goal_lose_weight"),
+        "gain_mass":        t("goal_gain_mass"),
+        "endurance":        t("goal_endurance"),
+        "general_fitness":  t("goal_general_fitness"),
+        "peak_performance": t("goal_peak_performance"),
     }
     level_map = {
-        "beginner":     "Начинающий 🌱",
-        "intermediate": "Средний 🏋️",
-        "advanced":     "Продвинутый 🔥",
+        "beginner":     t("level_beginner"),
+        "intermediate": t("level_intermediate"),
+        "advanced":     t("level_advanced"),
     }
     season_map = {
-        "bulk":     "Набор массы 💪",
-        "cut":      "Сушка 🔥",
-        "maintain": "Поддержание ⚖️",
-        "peak":     "Пик формы 🏆",
+        "bulk":     t("season_bulk"),
+        "cut":      t("season_cut"),
+        "maintain": t("season_maintain"),
+        "peak":     t("season_peak"),
     }
     time_map = {
-        "morning":  "Утром 🌅",
-        "evening":  "Вечером 🌙",
-        "flexible": "Гибко ⏰",
+        "morning":  t("time_morning"),
+        "evening":  t("time_evening"),
+        "flexible": t("time_flexible"),
     }
     location_map = {
-        "home":     "Дома 🏠",
-        "gym":      "В зале 🏋️",
-        "outdoor":  "На улице 🌳",
-        "flexible": "По-разному 🔄",
+        "home":     t("location_home"),
+        "gym":      t("location_gym"),
+        "outdoor":  t("location_outdoor"),
+        "flexible": t("location_flexible"),
     }
 
-    goal_label  = goal_map.get(user.get("goal", ""), user.get("goal") or "не указана")
-    level_label = level_map.get(user.get("fitness_level", "beginner"), "Начинающий 🌱")
+    goal_label  = goal_map.get(user.get("goal", ""), user.get("goal") or t("goal_default"))
+    level_label = level_map.get(user.get("fitness_level", "beginner"), t("level_beginner"))
     streak_icon = "🔥" if streak > 0 else "💤"
 
     lines = [
-        f"👤 *Профиль {user.get('name') or tg.first_name}*",
+        t("profile_header", name=user.get('name') or tg.first_name),
         "━━━━━━━━━━━━━━━━━",
-        f"🎯 Цель: {goal_label}",
-        f"📊 Уровень: {level_label}",
-        f"{streak_icon} Стрик: *{streak} дн.*",
+        t("profile_goal", val=goal_label),
+        t("profile_level", val=level_label),
+        t("profile_streak", icon=streak_icon, val=streak),
     ]
     if xp_line:
         lines.append(xp_line)
 
     lines += [
         "━━━━━━━━━━━━━━━━━",
-        "📋 *Физические данные:*",
+        t("profile_physical"),
     ]
 
-    lines.append(f"• Возраст: {surface['age']} лет"        if surface.get("age")       else "• Возраст: не указан")
-    lines.append(f"• Рост: {int(surface['height_cm'])} см"  if surface.get("height_cm") else "• Рост: не указан")
+    lines.append(t("profile_age", val=surface['age'])     if surface.get("age")       else t("profile_age_none"))
+    lines.append(t("profile_height", val=int(surface['height_cm'])) if surface.get("height_cm") else t("profile_height_none"))
     if latest_weight:
-        lines.append(f"• Вес: *{latest_weight} кг*  _{latest_weight_date}_")
+        lines.append(t("profile_weight", val=latest_weight, date=latest_weight_date))
     else:
-        lines.append("• Вес: не указан")
+        lines.append(t("profile_weight_none"))
 
     if user.get("injuries"):
         try:
             import json
             inj_list = json.loads(user["injuries"])
             if inj_list:
-                lines.append(f"• Ограничения: {', '.join(inj_list)}")
+                lines.append(t("profile_injuries", val=', '.join(inj_list)))
         except Exception:
             pass
 
     lines += [
         "━━━━━━━━━━━━━━━━━",
-        "🏋️ *Тренировки:*",
-        f"• Время: {time_map.get(training.get('preferred_time', 'flexible'), 'Гибко ⏰')}",
-        f"• Место: {location_map.get(user.get('training_location', 'flexible'), 'По-разному 🔄')}",
-        f"• Сезон: {season_map.get(surface.get('season', 'maintain'), 'Поддержание ⚖️')}",
+        t("profile_training"),
+        t("profile_training_time", val=time_map.get(training.get('preferred_time', 'flexible'), t("time_flexible"))),
+        t("profile_training_location", val=location_map.get(user.get('training_location', 'flexible'), t("location_flexible"))),
+        t("profile_training_season", val=season_map.get(surface.get('season', 'maintain'), t("season_maintain"))),
     ]
     if training.get("current_program"):
-        lines.append(f"• Программа: {training['current_program']}")
+        lines.append(t("profile_training_program", val=training['current_program']))
 
     if nutrition and nutrition.get("daily_calories"):
         lines += [
             "━━━━━━━━━━━━━━━━━",
-            "🥗 *Питание (цель КБЖУ):*",
-            f"• *{nutrition['daily_calories']} ккал* / "
-            f"Б{nutrition.get('protein_g', '?')}г / "
-            f"Ж{nutrition.get('fat_g', '?')}г / "
-            f"У{nutrition.get('carbs_g', '?')}г",
+            t("profile_nutrition"),
+            t("profile_nutrition_values",
+              cal=nutrition['daily_calories'],
+              p=nutrition.get('protein_g', '?'),
+              f=nutrition.get('fat_g', '?'),
+              c=nutrition.get('carbs_g', '?')),
         ]
 
     lines += [
         "━━━━━━━━━━━━━━━━━",
-        "✏️ _Обнови данные — просто напиши мне._",
+        t("profile_edit_hint"),
     ]
 
     await update.message.reply_text(
@@ -609,10 +565,10 @@ async def cmd_test(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Напиши /start чтобы начать.")
+        await update.message.reply_text(t("test_no_profile"))
         return
     if not user["active"]:
-        await update.message.reply_text("Ты на паузе. Напиши /start чтобы вернуться.")
+        await update.message.reply_text(t("test_paused"))
         return
 
     days = days_since_last_test(user["id"])
@@ -620,11 +576,7 @@ async def cmd_test(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         last = get_last_fitness_test(user["id"])
         last_score = last["fitness_score"] if last else "?"
         await update.message.reply_text(
-            f"⚠️ Последний тест был *{days} дн. назад* "
-            f"(score: *{last_score}/100*).\n"
-            f"Рекомендуется тестироваться не чаще раза в {TEST_COOLDOWN_DAYS} дней.\n\n"
-            "Всё равно пройти тест? Напиши число отжиманий ниже,\n"
-            "или /cancel для отмены.",
+            t("test_cooldown", days=days, cooldown=TEST_COOLDOWN_DAYS),
             parse_mode="Markdown",
         )
 
@@ -633,15 +585,7 @@ async def cmd_test(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     if days is None or days >= TEST_COOLDOWN_DAYS:
         await update.message.reply_text(
-            "🏋️ *Фитнес-тест — Протокол оценки формы*\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "Тест из 3 упражнений, оценка по стандартам ACSM.\n"
-            "Каждое упражнение — до полного отказа, без пауз.\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "*Тест 1/3 — Отжимания* 🏋️\n"
-            "Выполни максимальное количество отжиманий\n"
-            "в одном подходе без остановки.\n\n"
-            "_Напиши результат числом._",
+            t("test_start"),
             parse_mode="Markdown",
         )
 
@@ -652,7 +596,7 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
+        await update.message.reply_text(t("plan_no_profile"))
         return
 
     plan = get_active_plan(user["id"])
@@ -661,10 +605,7 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     if plan is None:
         await update.message.reply_text(
-            "📋 *Плана пока нет.*\n\n"
-            "Новый план генерируется каждое *воскресенье в 20:00* автоматически.\n"
-            "Хочешь — попроси меня составить план прямо сейчас:\n"
-            "_«составь план тренировок на неделю»_",
+            t("plan_empty"),
             parse_mode="Markdown",
             reply_markup=kb_back_to_menu(),
         )
@@ -673,7 +614,7 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     from scheduler.logic import _format_plan_message
     msg = _format_plan_message(plan)
     status = plan.get("status", "active")
-    prefix = "" if status == "active" else "📦 _Архивный план_\n\n"
+    prefix = "" if status == "active" else t("plan_archived")
 
     await update.message.reply_text(
         f"{prefix}{msg}",
@@ -688,7 +629,7 @@ async def cmd_achievements(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
+        await update.message.reply_text(t("achievements_no_profile"))
         return
 
     try:
@@ -696,7 +637,7 @@ async def cmd_achievements(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
         msg = format_achievements_message(user["id"])
     except Exception as e:
         logger.error(f"[CMD] /achievements error for {tg.id}: {e}")
-        msg = "⚠️ Не удалось загрузить данные. Попробуй позже."
+        msg = t("achievements_error")
 
     await update.message.reply_text(
         msg,
@@ -714,7 +655,7 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
+        await update.message.reply_text(t("history_no_profile"))
         return
 
     days = 7
@@ -758,29 +699,29 @@ async def _send_history(message, user: dict, days: int) -> None:
         ORDER BY set_at DESC
     """, (uid, since)).fetchall()
 
-    lines = [f"📅 *Хроника за {days} дней* (до {today.strftime('%d.%m')})\n"]
+    lines = [t("history_header", days=days, date=today.strftime('%d.%m'))]
 
     if not workouts_raw and not metrics_raw:
-        lines.append("_Нет данных за указанный период._")
+        lines.append(t("history_empty"))
     else:
         if workouts_raw:
             type_icons = {
                 "strength": "💪", "cardio": "🏃", "hiit": "⚡",
                 "stretch": "🧘", "sport": "⚽", "other": "🏋️",
             }
-            lines.append("🏋️ *Тренировки:*")
+            lines.append(t("history_workouts"))
             for w in workouts_raw[:10]:
                 icon = type_icons.get(w["type"], "🏋️")
                 dur = f" {w['duration_min']}мин" if w["duration_min"] else ""
                 intensity = f" [{w['intensity']}/10]" if w["intensity"] else ""
                 done = "✅" if w["completed"] else "⬜"
                 date_fmt = w["date"][5:] if w["date"] else "?"
-                lines.append(f"  {done} {date_fmt}: {icon} {w['type'] or 'тренировка'}{dur}{intensity}")
+                lines.append(f"  {done} {date_fmt}: {icon} {w['type'] or t('history_workout_default')}{dur}{intensity}")
             if len(workouts_raw) > 10:
-                lines.append(f"  _...ещё {len(workouts_raw) - 10}_")
+                lines.append(t("history_more", n=len(workouts_raw) - 10))
 
         if metrics_raw:
-            lines.append("\n📊 *Метрики:*")
+            lines.append("\n" + t("history_metrics"))
             for m in metrics_raw[:7]:
                 parts = []
                 if m["weight_kg"]:  parts.append(f"⚖️{m['weight_kg']}кг")
@@ -792,8 +733,8 @@ async def _send_history(message, user: dict, days: int) -> None:
                     lines.append(f"  {date_fmt}: {' '.join(parts)}")
 
     if prs_raw:
-        lines.append("\n🏆 *Рекорды за период:*")
-        suffix_map = {"weight": "кг", "time": "сек", "reps": "пов"}
+        lines.append("\n" + t("history_records"))
+        suffix_map = {"weight": t("history_unit_kg"), "time": t("history_unit_sec"), "reps": t("history_unit_reps")}
         for pr in prs_raw[:5]:
             suffix = suffix_map.get(pr["record_type"], "")
             improve = f" (+{pr['improvement_pct']:.0f}%)" if pr.get("improvement_pct") else ""
@@ -808,7 +749,7 @@ async def _send_history(message, user: dict, days: int) -> None:
     if total_count > 0:
         bar_filled = min(10, done_count)
         bar = "█" * bar_filled + "░" * (10 - bar_filled)
-        lines.append(f"\n`[{bar}]` {done_count}/{total_count} тренировок выполнено")
+        lines.append("\n" + t("history_bar", bar=bar, done=done_count, total=total_count))
 
     await message.reply_text(
         "\n".join(lines),
@@ -834,7 +775,7 @@ async def cmd_costs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
+        await update.message.reply_text(t("costs_no_profile"))
         return
 
     try:
@@ -848,7 +789,7 @@ async def cmd_costs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             calls  = s.get("calls", 0)
             avg_t  = s.get("avg_time", 0)
             if calls == 0:
-                return "_нет данных_"
+                return t("costs_no_data")
             avg_str = f"  ·  ⏱ {avg_t:.1f}с" if avg_t else ""
             return f"`${cost:.4f}`  ({calls} запр.{avg_str})"
 
@@ -861,19 +802,19 @@ async def cmd_costs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
         day_section = ""
         if day_lines:
-            day_section = "\n*По дням (последние 5):*\n" + "\n".join(day_lines) + "\n"
+            day_section = "\n" + t("costs_by_day") + "\n".join(day_lines) + "\n"
 
         name = user.get("name") or tg.first_name
         text = (
-            f"💰 *Расходы на AI — {name}*\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            f"Сегодня:    {_fmt(stats['today'])}\n"
-            f"7 дней:     {_fmt(stats['week'])}\n"
-            f"30 дней:    {_fmt(stats['month'])}\n"
-            f"Всё время:  {_fmt(stats['all'])}\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            f"{day_section}"
-            "\n_Под каждым ответом бота — сноска с временем и стоимостью._"
+            t("costs_header", name=name)
+            + "━━━━━━━━━━━━━━━━━\n"
+            + t("costs_today", val=_fmt(stats['today']))
+            + t("costs_week",  val=_fmt(stats['week']))
+            + t("costs_month", val=_fmt(stats['month']))
+            + t("costs_all",   val=_fmt(stats['all']))
+            + "━━━━━━━━━━━━━━━━━\n"
+            + day_section
+            + "\n" + t("costs_footer")
         )
 
         await update.message.reply_text(
@@ -884,7 +825,7 @@ async def cmd_costs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     except Exception as e:
         logger.error(f"[CMD] /costs error for {tg.id}: {e}")
-        await update.message.reply_text("⚠️ Не удалось загрузить данные. Попробуй позже.")
+        await update.message.reply_text(t("costs_error"))
 
 
 # ─── /reset ──────────────────────────────────────────────────────────────────
@@ -892,10 +833,7 @@ async def cmd_costs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Сброс данных — использует inline кнопки вместо ввода текста (Фаза 11)."""
     await update.message.reply_text(
-        "⚠️ *Внимание!*\n\n"
-        "Это удалит *все* твои данные:\n"
-        "тренировки, статистику, профиль, историю.\n\n"
-        "Это действие *нельзя отменить*.",
+        t("reset_warning"),
         parse_mode="Markdown",
         reply_markup=kb_reset_confirm(),
     )
@@ -909,7 +847,7 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
-        await update.message.reply_text("Напиши /start чтобы начать.")
+        await update.message.reply_text(t("today_no_profile"))
         return
 
     from db.queries.nutrition import get_today_nutrition
@@ -942,7 +880,7 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     def _fmt(val, default=0):
         return val if val is not None else default
 
-    lines = [f"📊 *Сегодня — {today_fmt}*\n"]
+    lines = [t("today_header", date=today_fmt)]
 
     # Питание
     cal   = _fmt(nutrition.get("calories")  if nutrition else None)
@@ -953,23 +891,23 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     if nutrition:
         lines += [
-            "🍽 *Питание:*",
-            f"Калории:  `{_bar(cal, goal_cal)}`  {cal} / {goal_cal} ккал",
-            f"Белок:    `{_bar(prot, goal_prot)}`  {prot} / {goal_prot} г",
-            f"Жиры:     `{_bar(fat,  goal_fat)}`  {fat} / {goal_fat} г",
-            f"Углеводы: `{_bar(carb, goal_carb)}`  {carb} / {goal_carb} г",
-            f"Вода:     `{_bar(water, goal_water)}`  {water // 1000:.1f} / {goal_water // 1000:.0f} л" if water else f"Вода:     `{'░' * 10}`  — / {goal_water // 1000:.0f} л",
+            t("today_nutrition"),
+            t("today_cal",  bar=_bar(cal,  goal_cal),  cur=cal,  goal=goal_cal),
+            t("today_prot", bar=_bar(prot, goal_prot), cur=prot, goal=goal_prot),
+            t("today_fat",  bar=_bar(fat,  goal_fat),  cur=fat,  goal=goal_fat),
+            t("today_carb", bar=_bar(carb, goal_carb), cur=carb, goal=goal_carb),
+            t("today_water",       bar=_bar(water, goal_water), cur=f"{water // 1000:.1f}", goal=f"{goal_water // 1000:.0f}") if water else t("today_water_empty", bar="░" * 10, goal=f"{goal_water // 1000:.0f}"),
         ]
     else:
-        lines.append("🍽 *Питание:* _данных за сегодня нет_\nНапиши что ел — записать в один тап:")
+        lines.append(t("today_nutrition_empty"))
 
     # Тренировка
     lines.append("")
     if workout and workout.get("completed"):
         dur  = workout.get("duration_min", "?")
         rpe  = workout.get("intensity", "?")
-        wtype = workout.get("type") or "тренировка"
-        lines.append(f"💪 *Тренировка:* ✅ {wtype} · {dur} мин · RPE {rpe}/10")
+        wtype = workout.get("type") or t("history_workout_default")
+        lines.append(t("today_workout_done", type=wtype, dur=dur, rpe=rpe))
     else:
         # Смотрим план на сегодня
         plan = get_active_plan(user["id"])
@@ -985,11 +923,11 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 pass
         if today_workout_planned and today_workout_planned.get("type") not in ("rest", "recovery", None):
             label = today_workout_planned.get("label") or today_workout_planned.get("type")
-            lines.append(f"💪 *Тренировка:* ⬜ Запланирована — _{label}_")
+            lines.append(t("today_workout_planned", label=label))
         elif today_workout_planned and today_workout_planned.get("type") in ("rest", "recovery"):
-            lines.append("💤 *Сегодня:* день отдыха по плану")
+            lines.append(t("today_rest_day"))
         else:
-            lines.append("💪 *Тренировка:* ⬜ Не записана")
+            lines.append(t("today_workout_empty"))
 
     await update.message.reply_text(
         "\n".join(lines),

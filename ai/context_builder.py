@@ -38,7 +38,12 @@ logger = logging.getLogger(__name__)
 
 
 def _load_prompt(filename: str) -> str:
-    path = os.path.join(PROMPTS_DIR, filename)
+    from config import LANG
+    lang_path = os.path.join(PROMPTS_DIR, LANG, filename)
+    if os.path.exists(lang_path):
+        path = lang_path
+    else:
+        path = os.path.join(PROMPTS_DIR, filename)
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
