@@ -20,6 +20,7 @@ import datetime
 from telegram import Bot
 
 from db.connection import get_connection
+from lang import t, days_word, workouts_word
 from config import (
     NUDGE_DROP_DAYS,
     NUDGE_STREAK_GAP,
@@ -31,34 +32,6 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
-
-# ─── Вспомогательные функции для склонения числительных ───────────────────────
-
-def _days_word(n: int) -> str:
-    """Склонение: 1 день / 2 дня / 5 дней."""
-    n = abs(n) % 100
-    if 11 <= n <= 19:
-        return "дней"
-    r = n % 10
-    if r == 1:
-        return "день"
-    if 2 <= r <= 4:
-        return "дня"
-    return "дней"
-
-
-def _workouts_word(n: int) -> str:
-    """Склонение: 1 тренировка / 2 тренировки / 5 тренировок."""
-    n = abs(n) % 100
-    if 11 <= n <= 19:
-        return "тренировок"
-    r = n % 10
-    if r == 1:
-        return "тренировка"
-    if 2 <= r <= 4:
-        return "тренировки"
-    return "тренировок"
-
 
 # ─── Anti-spam: nudge_log ─────────────────────────────────────────────────────
 
@@ -123,11 +96,6 @@ def _check_drop_nudge(uid: int) -> str | None:
 
     # Проверяем, тренируется ли пользователь обычно в этот день недели
     # (за последние 4 недели минимум 2 раза)
-    weekday_ru = {
-        0: "понедельникам", 1: "вторникам", 2: "средам",
-        3: "четвергам",    4: "пятницам",  5: "субботам",
-        6: "воскресеньям",
-    }
     four_weeks_ago = (today - datetime.timedelta(weeks=4)).isoformat()
     recent_rows = conn.execute(
         "SELECT date FROM workouts WHERE user_id = ? AND completed = 1 AND date >= ?",
@@ -141,15 +109,14 @@ def _check_drop_nudge(uid: int) -> str | None:
 
     usual_hint = ""
     if weekday_counts.get(today.weekday(), 0) >= 2:
-        usual_hint = (
-            f"\nТы обычно тренируешься по {weekday_ru[today.weekday()]}. "
-            f"Ещё не поздно! 💪"
-        )
+        usual_hint = "\n" + t("nudge_usual_day", weekday=t(f"weekday_by_{today.weekday()}"))
 
-    return (
-        f"📉 *Привет, всё ок?*\n\n"
-        f"Прошло уже *{days_since} {_days_word(days_since)}* без тренировки "
-        f"(последняя: {last_date.strftime('%d.%m')}).{usual_hint}"
+    return t(
+        "nudge_drop",
+        days=days_since,
+        days_w=days_word(days_since),
+        last_date=last_date.strftime("%d.%m"),
+        usual_hint=usual_hint,
     )
 
 
@@ -181,12 +148,11 @@ def _check_recovery_nudge(uid: int) -> str | None:
     if avg_sleep >= NUDGE_SLEEP_THRESHOLD:
         return None
 
-    return (
-        f"😴 *Внимание: недосып*\n\n"
-        f"Средний сон за последние {NUDGE_SLEEP_DAYS} дня — "
-        f"*{avg_sleep:.1f} ч* (норма: {NUDGE_SLEEP_THRESHOLD:.0f}+ ч).\n\n"
-        f"Сегодня снизь интенсивность тренировки или сделай лёгкую растяжку. "
-        f"Восстановление — это тоже тренинг. 🌿"
+    return t(
+        "nudge_sleep",
+        sleep_days=NUDGE_SLEEP_DAYS,
+        avg_sleep=avg_sleep,
+        threshold=NUDGE_SLEEP_THRESHOLD,
     )
 
 
@@ -270,31 +236,33 @@ def _check_pr_nudge(uid: int) -> str | None:
 
         # Рассчитываем рекомендуемое следующее значение
         last_date = datetime.date.fromisoformat(last["date"])
+        u_kg   = t("history_unit_kg")
+        u_reps = t("history_unit_reps")
+        u_sec  = t("history_unit_sec")
         if record_type == "weight":
             suggestion = last_val + 2.5
-            unit = "кг"
-            last_str = f"{last_val:.1f} кг"
-            pr_str = f"{pr_val:.1f} кг"
-            sug_str = f"{suggestion:.1f} кг"
+            last_str = f"{last_val:.1f} {u_kg}"
+            pr_str   = f"{pr_val:.1f} {u_kg}"
+            sug_str  = f"{suggestion:.1f} {u_kg}"
         elif record_type == "reps":
             suggestion = int(last_val) + 1
-            unit = "повт"
-            last_str = f"{int(last_val)} повт"
-            pr_str = f"{int(pr_val)} повт"
-            sug_str = f"{suggestion} повт"
+            last_str = f"{int(last_val)} {u_reps}"
+            pr_str   = f"{int(pr_val)} {u_reps}"
+            sug_str  = f"{suggestion} {u_reps}"
         else:  # time
             suggestion = int(last_val) + 5
-            unit = "сек"
-            last_str = f"{int(last_val)} сек"
-            pr_str = f"{int(pr_val)} сек"
-            sug_str = f"{suggestion} сек"
+            last_str = f"{int(last_val)} {u_sec}"
+            pr_str   = f"{int(pr_val)} {u_sec}"
+            sug_str  = f"{suggestion} {u_sec}"
 
-        return (
-            f"💪 *Рекорд близко!*\n\n"
-            f"В прошлый раз ({last_date.strftime('%d.%m')}) "
-            f"на *{ex_name}* ты показал *{last_str}*.\n"
-            f"Твой личный рекорд: {pr_str}.\n\n"
-            f"Попробуй сегодня *{sug_str}* — ты на {ratio:.0f}% формы! 🚀"
+        return t(
+            "nudge_pr",
+            last_date=last_date.strftime("%d.%m"),
+            exercise=ex_name,
+            last_str=last_str,
+            pr_str=pr_str,
+            sug_str=sug_str,
+            ratio=ratio,
         )
 
     return None
@@ -320,11 +288,13 @@ def _check_streak_nudge(uid: int) -> str | None:
     if not (0 < gap <= NUDGE_STREAK_GAP):
         return None
 
-    return (
-        f"🔥 *Стрик-алерт!*\n\n"
-        f"Ты на активном стрике — *{current} {_days_word(current)} подряд*! "
-        f"Всего *{gap} {_days_word(gap)}* до твоего рекорда "
-        f"({max_ever} дней подряд). Держись! 💪"
+    return t(
+        "nudge_streak",
+        current=current,
+        current_w=days_word(current),
+        gap=gap,
+        gap_w=days_word(gap),
+        max_ever=max_ever,
     )
 
 
@@ -372,12 +342,13 @@ def _check_goal_nudge(uid: int) -> str | None:
         return None
 
     remaining = planned - completed
-    return (
-        f"🎯 *Половина пути!*\n\n"
-        f"Из {planned} {_workouts_word(planned)} на этой неделе ты сделал "
-        f"*{completed}* — это примерно половина. Ты на правильном треке! "
-        f"Осталось ещё {remaining} {_workouts_word(remaining)}. "
-        f"Финиш уже виден 🏆"
+    return t(
+        "nudge_goal_halfway",
+        planned=planned,
+        planned_w=workouts_word(planned),
+        completed=completed,
+        remaining=remaining,
+        remaining_w=workouts_word(remaining),
     )
 
 
@@ -441,36 +412,31 @@ def _check_weight_trend_nudge(uid: int) -> str | None:
     ).fetchone()
     goal = (goal_row["goal"] or "") if goal_row else ""
 
-    direction = "вверх" if change_pct > 0 else "вниз"
+    direction = t("nudge_direction_up") if change_pct > 0 else t("nudge_direction_down")
     change_abs = abs(avg_recent - avg_early)
     arrow = "📈" if change_pct > 0 else "📉"
 
     # Оцениваем соответствие цели
-    if change_pct > 0 and "похудеть" in goal:
-        tone = (
-            f"⚠️ Обрати внимание — вес идёт *вверх*, "
-            f"а твоя цель — похудеть. Проверь питание и дефицит калорий."
-        )
-    elif change_pct < 0 and "набрать массу" in goal:
-        tone = (
-            f"⚠️ Вес снижается, а твоя цель — набор массы. "
-            f"Возможно, нужно увеличить калорийность рациона."
-        )
+    if change_pct > 0 and goal == "lose_weight":
+        tone = t("nudge_weight_up_lose")
+    elif change_pct < 0 and goal == "gain_mass":
+        tone = t("nudge_weight_down_gain")
     elif abs(change_pct) > 5:
-        tone = (
-            f"Значительное изменение за короткий срок. "
-            f"Убедись, что всё идёт по плану."
-        )
+        tone = t("nudge_weight_big_change")
     else:
-        tone = f"Следи за динамикой и корректируй питание если нужно."
+        tone = t("nudge_weight_normal")
 
-    return (
-        f"{arrow} *Тренд веса*\n\n"
-        f"За последние 14 дней вес идёт *{direction}*: "
-        f"{avg_early:.1f} → {avg_recent:.1f} кг "
-        f"({'+' if change_pct > 0 else ''}{change_pct:.1f}%, "
-        f"{'+' if change_pct > 0 else ''}{change_abs:.1f} кг).\n\n"
-        f"{tone}"
+    sign = "+" if change_pct > 0 else ""
+    return t(
+        "nudge_weight_trend",
+        arrow=arrow,
+        direction=direction,
+        avg_early=avg_early,
+        avg_recent=avg_recent,
+        sign=sign,
+        change_pct=change_pct,
+        change_abs=change_abs,
+        tone=tone,
     )
 
 
