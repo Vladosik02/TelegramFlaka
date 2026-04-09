@@ -5,7 +5,6 @@ bot/keyboards.py — Inline и Reply клавиатуры.
 кнопки периода истории, подтверждение сброса inline.
 """
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from lang import t
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -16,23 +15,23 @@ def kb_main_menu() -> InlineKeyboardMarkup:
     """Главное меню бота — доступно через /menu или кнопкой."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_stats"),    callback_data="menu:stats"),
-            InlineKeyboardButton(t("kb_plan"),     callback_data="menu:plan"),
+            InlineKeyboardButton("📊 Статистика",    callback_data="menu:stats"),
+            InlineKeyboardButton("📋 План",          callback_data="menu:plan"),
         ],
         [
-            InlineKeyboardButton(t("kb_calendar"), callback_data="menu:calendar"),
-            InlineKeyboardButton(t("kb_chronicle"), callback_data="menu:history"),
+            InlineKeyboardButton("🗓 Календарь",     callback_data="menu:calendar"),
+            InlineKeyboardButton("📅 Хроника",       callback_data="menu:history"),
         ],
         [
-            InlineKeyboardButton(t("kb_achievements"), callback_data="menu:achievements"),
-            InlineKeyboardButton(t("kb_profile"),      callback_data="menu:profile"),
+            InlineKeyboardButton("🏆 Ачивки",        callback_data="menu:achievements"),
+            InlineKeyboardButton("👤 Профиль",       callback_data="menu:profile"),
         ],
         [
-            InlineKeyboardButton(t("kb_fitness_test"), callback_data="menu:test"),
-            InlineKeyboardButton(t("kb_settings"),     callback_data="menu:setup"),
+            InlineKeyboardButton("🏋️ Фитнес-тест",  callback_data="menu:test"),
+            InlineKeyboardButton("🔧 Настройки",     callback_data="menu:setup"),
         ],
         [
-            InlineKeyboardButton(t("kb_export_csv"),   callback_data="menu:export"),
+            InlineKeyboardButton("📤 Экспорт CSV",   callback_data="menu:export"),
         ],
     ])
 
@@ -41,18 +40,18 @@ def kb_stats_quick() -> InlineKeyboardMarkup:
     """Быстрые действия под /stats."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_7days"),        callback_data="menu:history_7"),
-            InlineKeyboardButton(t("kb_30days"),       callback_data="menu:history_30"),
+            InlineKeyboardButton("📅 7 дней",        callback_data="menu:history_7"),
+            InlineKeyboardButton("📅 30 дней",       callback_data="menu:history_30"),
         ],
         [
-            InlineKeyboardButton(t("kb_weight_chart"), callback_data="chart:weight"),
-            InlineKeyboardButton(t("kb_records"),      callback_data="chart:strength"),
+            InlineKeyboardButton("⚖️ График веса",   callback_data="chart:weight"),
+            InlineKeyboardButton("💪 Рекорды",       callback_data="chart:strength"),
         ],
         [
-            InlineKeyboardButton(t("kb_fitness_test"), callback_data="menu:test"),
-            InlineKeyboardButton(t("kb_export"),       callback_data="menu:export"),
+            InlineKeyboardButton("🏋️ Фитнес-тест",  callback_data="menu:test"),
+            InlineKeyboardButton("📤 Экспорт",       callback_data="menu:export"),
         ],
-        [InlineKeyboardButton(t("kb_home"),            callback_data="menu:home")],
+        [InlineKeyboardButton("🏠 Главное меню",     callback_data="menu:home")],
     ])
 
 
@@ -60,14 +59,14 @@ def kb_profile_quick() -> InlineKeyboardMarkup:
     """Быстрые действия под /profile."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_update_settings"), callback_data="menu:setup"),
-            InlineKeyboardButton(t("kb_stats"),           callback_data="menu:stats"),
+            InlineKeyboardButton("✏️ Обновить настройки", callback_data="menu:setup"),
+            InlineKeyboardButton("📊 Статистика",          callback_data="menu:stats"),
         ],
         [
-            InlineKeyboardButton(t("kb_my_achievements"), callback_data="menu:achievements"),
-            InlineKeyboardButton(t("kb_export"),          callback_data="menu:export"),
+            InlineKeyboardButton("🏆 Мои ачивки",   callback_data="menu:achievements"),
+            InlineKeyboardButton("📤 Экспорт",       callback_data="menu:export"),
         ],
-        [InlineKeyboardButton(t("kb_home"),               callback_data="menu:home")],
+        [InlineKeyboardButton("🏠 Главное меню",     callback_data="menu:home")],
     ])
 
 
@@ -75,10 +74,10 @@ def kb_achievements_quick() -> InlineKeyboardMarkup:
     """Быстрые действия под /achievements."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_chronicle_30d"), callback_data="menu:history_30"),
-            InlineKeyboardButton(t("kb_fitness_test"),  callback_data="menu:test"),
+            InlineKeyboardButton("📅 Хроника 30 дней", callback_data="menu:history_30"),
+            InlineKeyboardButton("🏋️ Фитнес-тест",    callback_data="menu:test"),
         ],
-        [InlineKeyboardButton(t("kb_home"),             callback_data="menu:home")],
+        [InlineKeyboardButton("🏠 Главное меню",        callback_data="menu:home")],
     ])
 
 
@@ -94,7 +93,7 @@ def kb_history_period(current_days: int = 7) -> InlineKeyboardMarkup:
             InlineKeyboardButton(mark(30), callback_data="menu:history_30"),
             InlineKeyboardButton(mark(90), callback_data="menu:history_90"),
         ],
-        [InlineKeyboardButton(t("kb_home"), callback_data="menu:home")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:home")],
     ])
 
 
@@ -102,10 +101,10 @@ def kb_plan_quick() -> InlineKeyboardMarkup:
     """Быстрые действия под /plan."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_stats"),        callback_data="menu:stats"),
-            InlineKeyboardButton(t("kb_fitness_test"), callback_data="menu:test"),
+            InlineKeyboardButton("📊 Статистика",   callback_data="menu:stats"),
+            InlineKeyboardButton("🏋️ Фитнес-тест", callback_data="menu:test"),
         ],
-        [InlineKeyboardButton(t("kb_home"),            callback_data="menu:home")],
+        [InlineKeyboardButton("🏠 Главное меню",    callback_data="menu:home")],
     ])
 
 
@@ -113,8 +112,8 @@ def kb_reset_confirm() -> InlineKeyboardMarkup:
     """Подтверждение сброса данных — inline кнопки вместо ввода текста."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_confirm_delete"), callback_data="reset:confirm"),
-            InlineKeyboardButton(t("kb_cancel"),         callback_data="reset:cancel"),
+            InlineKeyboardButton("✅ Да, удалить всё", callback_data="reset:confirm"),
+            InlineKeyboardButton("❌ Отмена",          callback_data="reset:cancel"),
         ],
     ])
 
@@ -123,18 +122,18 @@ def kb_stop_quick() -> InlineKeyboardMarkup:
     """Быстрый выбор паузы после /stop."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_3days"),   callback_data="stop:3"),
-            InlineKeyboardButton(t("kb_7days_p"), callback_data="stop:7"),
-            InlineKeyboardButton(t("kb_14days"),  callback_data="stop:14"),
+            InlineKeyboardButton("3 дня",   callback_data="stop:3"),
+            InlineKeyboardButton("7 дней",  callback_data="stop:7"),
+            InlineKeyboardButton("14 дней", callback_data="stop:14"),
         ],
-        [InlineKeyboardButton(t("kb_forever"), callback_data="stop:indefinite")],
+        [InlineKeyboardButton("Бессрочно", callback_data="stop:indefinite")],
     ])
 
 
 def kb_back_to_menu() -> InlineKeyboardMarkup:
     """Простая кнопка возврата в главное меню."""
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_home"), callback_data="menu:home"),
+        InlineKeyboardButton("🏠 Главное меню", callback_data="menu:home"),
     ]])
 
 
@@ -146,15 +145,15 @@ def kb_workout_duration() -> InlineKeyboardMarkup:
     """Выбор длительности тренировки (шаг 1 guided flow)."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_20min"), callback_data="wf:dur:20"),
-            InlineKeyboardButton(t("kb_30min"), callback_data="wf:dur:30"),
-            InlineKeyboardButton(t("kb_45min"), callback_data="wf:dur:45"),
-            InlineKeyboardButton(t("kb_60min"), callback_data="wf:dur:60"),
+            InlineKeyboardButton("20 мин", callback_data="wf:dur:20"),
+            InlineKeyboardButton("30 мин", callback_data="wf:dur:30"),
+            InlineKeyboardButton("45 мин", callback_data="wf:dur:45"),
+            InlineKeyboardButton("60 мин", callback_data="wf:dur:60"),
         ],
         [
-            InlineKeyboardButton(t("kb_75min"), callback_data="wf:dur:75"),
-            InlineKeyboardButton(t("kb_90min"), callback_data="wf:dur:90"),
-            InlineKeyboardButton(t("kb_other"), callback_data="wf:dur:custom"),
+            InlineKeyboardButton("75 мин", callback_data="wf:dur:75"),
+            InlineKeyboardButton("90 мин", callback_data="wf:dur:90"),
+            InlineKeyboardButton("⌨️ Другое", callback_data="wf:dur:custom"),
         ],
     ])
 
@@ -170,12 +169,12 @@ def kb_workout_feeling() -> InlineKeyboardMarkup:
     """Ощущения после тренировки (шаг 3 guided flow)."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_great"),  callback_data="wf:feel:great"),
-            InlineKeyboardButton(t("kb_normal"), callback_data="wf:feel:ok"),
+            InlineKeyboardButton("💪 Отлично",   callback_data="wf:feel:great"),
+            InlineKeyboardButton("😐 Нормально", callback_data="wf:feel:ok"),
         ],
         [
-            InlineKeyboardButton(t("kb_hard"), callback_data="wf:feel:hard"),
-            InlineKeyboardButton(t("kb_pain"), callback_data="wf:feel:pain"),
+            InlineKeyboardButton("😓 Тяжело",  callback_data="wf:feel:hard"),
+            InlineKeyboardButton("🤕 Боль",    callback_data="wf:feel:pain"),
         ],
     ])
 
@@ -183,7 +182,7 @@ def kb_workout_feeling() -> InlineKeyboardMarkup:
 def kb_workout_comment() -> InlineKeyboardMarkup:
     """Комментарий — пропустить или ввести текстом (шаг 4 guided flow)."""
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_no_comment"), callback_data="wf:comment:skip"),
+        InlineKeyboardButton("✅ Нет, всё ок", callback_data="wf:comment:skip"),
     ]])
 
 
@@ -216,16 +215,16 @@ def kb_checkin_wellbeing() -> InlineKeyboardMarkup:
 def kb_checkin_workout_done() -> InlineKeyboardMarkup:
     """Вечерний/ночной чек-ин: сделал тренировку?"""
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_workout_done"),    callback_data="ci:wk:done"),
-        InlineKeyboardButton(t("kb_workout_no"),      callback_data="ci:wk:no"),
-        InlineKeyboardButton(t("kb_workout_skipped"), callback_data="ci:wk:skip"),
+        InlineKeyboardButton("✅ Сделал",    callback_data="ci:wk:done"),
+        InlineKeyboardButton("❌ Нет",       callback_data="ci:wk:no"),
+        InlineKeyboardButton("⏭ Пропустил", callback_data="ci:wk:skip"),
     ]])
 
 
 def kb_checkin_food_skip() -> InlineKeyboardMarkup:
     """Кнопка «Ничего не ел» для пропуска ответа о еде."""
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_food_nothing"), callback_data="ci:food:skip"),
+        InlineKeyboardButton("🚫 Ничего не ел", callback_data="ci:food:skip"),
     ]])
 
 
@@ -234,9 +233,9 @@ def kb_checkin_food_skip() -> InlineKeyboardMarkup:
 def kb_workout_done() -> InlineKeyboardMarkup:
     """Кнопки записи тренировки (guided flow, /today, etc.)."""
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_checkin_done"),    callback_data="workout_done"),
-        InlineKeyboardButton(t("kb_checkin_pending"), callback_data="workout_pending"),
-        InlineKeyboardButton(t("kb_checkin_skipped"), callback_data="workout_skipped"),
+        InlineKeyboardButton("💪 Сделал",       callback_data="workout_done"),
+        InlineKeyboardButton("⏳ Ещё не было",  callback_data="workout_pending"),
+        InlineKeyboardButton("❌ Пропустил",    callback_data="workout_skipped"),
     ]])
 
 
@@ -250,9 +249,9 @@ def kb_energy() -> InlineKeyboardMarkup:
 
 def kb_reminder() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_preworkout_go"),    callback_data="reminder_go"),
-        InlineKeyboardButton(t("kb_preworkout_30min"), callback_data="reminder_snooze"),
-        InlineKeyboardButton(t("kb_preworkout_skip"),  callback_data="reminder_skip"),
+        InlineKeyboardButton("✅ Иду",          callback_data="reminder_go"),
+        InlineKeyboardButton("⏰ Ещё 30 мин",  callback_data="reminder_snooze"),
+        InlineKeyboardButton("❌ Не сегодня",  callback_data="reminder_skip"),
     ]])
 
 
@@ -262,53 +261,53 @@ def kb_reminder() -> InlineKeyboardMarkup:
 
 def kb_goal() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("kb_goal_lose"),      callback_data="goal_lose"),
-         InlineKeyboardButton(t("kb_goal_gain"),      callback_data="goal_gain")],
-        [InlineKeyboardButton(t("kb_goal_endurance"), callback_data="goal_endurance"),
-         InlineKeyboardButton(t("kb_goal_general"),   callback_data="goal_general")],
+        [InlineKeyboardButton("🔥 Похудеть",      callback_data="goal_lose"),
+         InlineKeyboardButton("💪 Набрать массу", callback_data="goal_gain")],
+        [InlineKeyboardButton("🏃 Выносливость",  callback_data="goal_endurance"),
+         InlineKeyboardButton("🧘 Общая форма",   callback_data="goal_general")],
     ])
 
 
 def kb_fitness_level() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_level_beginner"),     callback_data="level_beginner"),
-        InlineKeyboardButton(t("kb_level_intermediate"), callback_data="level_intermediate"),
-        InlineKeyboardButton(t("kb_level_advanced"),     callback_data="level_advanced"),
+        InlineKeyboardButton("🌱 Начинающий",   callback_data="level_beginner"),
+        InlineKeyboardButton("🏋️ Средний",     callback_data="level_intermediate"),
+        InlineKeyboardButton("🔥 Продвинутый", callback_data="level_advanced"),
     ]])
 
 
 def kb_workout_time() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_time_morning"),  callback_data="time_morning"),
-        InlineKeyboardButton(t("kb_time_evening"),  callback_data="time_evening"),
-        InlineKeyboardButton(t("kb_time_flexible"), callback_data="time_flexible"),
+        InlineKeyboardButton("🌅 Утром",   callback_data="time_morning"),
+        InlineKeyboardButton("🌙 Вечером", callback_data="time_evening"),
+        InlineKeyboardButton("⏰ Гибко",   callback_data="time_flexible"),
     ]])
 
 
 def kb_health_check() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t("kb_health_ok"),      callback_data="health_ok"),
-        InlineKeyboardButton(t("kb_health_limited"), callback_data="health_issues"),
+        InlineKeyboardButton("✅ Всё в порядке",     callback_data="health_ok"),
+        InlineKeyboardButton("⚠️ Есть ограничения", callback_data="health_issues"),
     ]])
 
 
 def kb_training_location() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("kb_loc_home"),     callback_data="location_home"),
-         InlineKeyboardButton(t("kb_loc_gym"),      callback_data="location_gym")],
-        [InlineKeyboardButton(t("kb_loc_outdoor"),  callback_data="location_outdoor"),
-         InlineKeyboardButton(t("kb_loc_flexible"), callback_data="location_flexible")],
+        [InlineKeyboardButton("🏠 Дома",       callback_data="location_home"),
+         InlineKeyboardButton("🏋️ Зал",        callback_data="location_gym")],
+        [InlineKeyboardButton("🌳 На улице",   callback_data="location_outdoor"),
+         InlineKeyboardButton("🔄 По-разному", callback_data="location_flexible")],
     ])
 
 
 def kb_training_days() -> InlineKeyboardMarkup:
     """Выбор расписания тренировок по дням недели (пресеты)."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("kb_days_3x"),    callback_data="days_3x")],
-        [InlineKeyboardButton(t("kb_days_4x"),    callback_data="days_4x")],
-        [InlineKeyboardButton(t("kb_days_5x"),    callback_data="days_5x")],
-        [InlineKeyboardButton(t("kb_days_daily"), callback_data="days_daily"),
-         InlineKeyboardButton(t("kb_days_flex"),  callback_data="days_flex")],
+        [InlineKeyboardButton("3 раза (Пн, Ср, Пт)",     callback_data="days_3x")],
+        [InlineKeyboardButton("4 раза (Пн, Вт, Чт, Пт)", callback_data="days_4x")],
+        [InlineKeyboardButton("5 раз (Пн–Пт)",           callback_data="days_5x")],
+        [InlineKeyboardButton("Ежедневно",  callback_data="days_daily"),
+         InlineKeyboardButton("Как получится", callback_data="days_flex")],
     ])
 
 
@@ -324,10 +323,10 @@ def kb_today_quick() -> InlineKeyboardMarkup:
     """Кнопки под /today: быстрый приём пищи и меню."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_quick_meal"),    callback_data="meal:quick"),
-            InlineKeyboardButton(t("kb_quick_workout"), callback_data="workout_done"),
+            InlineKeyboardButton("🍽 Быстрый приём", callback_data="meal:quick"),
+            InlineKeyboardButton("💪 Записать тренировку", callback_data="workout_done"),
         ],
-        [InlineKeyboardButton(t("kb_home"), callback_data="menu:home")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:home")],
     ])
 
 
@@ -335,36 +334,36 @@ def kb_quick_meals() -> InlineKeyboardMarkup:
     """Пресеты частых приёмов пищи — 1 тап = записать."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(t("kb_meal_grechka"),  callback_data="meal:grechka"),
-            InlineKeyboardButton(t("kb_meal_ovsyanka"), callback_data="meal:ovsyanka"),
+            InlineKeyboardButton("🍚 Гречка + курица",  callback_data="meal:grechka"),
+            InlineKeyboardButton("🥣 Овсянка",          callback_data="meal:ovsyanka"),
         ],
         [
-            InlineKeyboardButton(t("kb_meal_tvorog"),   callback_data="meal:tvorog"),
-            InlineKeyboardButton(t("kb_meal_eggs"),     callback_data="meal:eggs"),
+            InlineKeyboardButton("🥛 Творог",           callback_data="meal:tvorog"),
+            InlineKeyboardButton("🥚 Яйца ×3",         callback_data="meal:eggs"),
         ],
         [
-            InlineKeyboardButton(t("kb_meal_protein"),  callback_data="meal:protein"),
+            InlineKeyboardButton("🥤 Протеин (шейк)",   callback_data="meal:protein"),
         ],
-        [InlineKeyboardButton(t("kb_back"),             callback_data="menu:home")],
+        [InlineKeyboardButton("« Назад",               callback_data="menu:home")],
     ])
 
 
 def kb_admin_main() -> InlineKeyboardMarkup:
     """Главное меню администратора."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("kb_admin_users"),     callback_data="adm:users"),
-         InlineKeyboardButton(t("kb_admin_jobs"),      callback_data="adm:jobs")],
-        [InlineKeyboardButton(t("kb_admin_broadcast"), callback_data="adm:broadcast"),
-         InlineKeyboardButton(t("kb_admin_trigger"),   callback_data="adm:trigger")],
-        [InlineKeyboardButton(t("kb_admin_costs"),     callback_data="adm:costs")],
+        [InlineKeyboardButton("👥 Пользователи", callback_data="adm:users"),
+         InlineKeyboardButton("⚙️ Задачи",       callback_data="adm:jobs")],
+        [InlineKeyboardButton("📢 Рассылка",     callback_data="adm:broadcast"),
+         InlineKeyboardButton("⚡ Триггер",      callback_data="adm:trigger")],
+        [InlineKeyboardButton("💰 Расходы AI",   callback_data="adm:costs")],
     ])
 
 
 def kb_costs_quick() -> InlineKeyboardMarkup:
     """Быстрые действия под /costs."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("kb_stats"),  callback_data="menu:stats"),
-         InlineKeyboardButton(t("kb_home"),   callback_data="menu:home")],
+        [InlineKeyboardButton("📊 Статистика",   callback_data="menu:stats"),
+         InlineKeyboardButton("🏠 Главное меню", callback_data="menu:home")],
     ])
 
 
@@ -378,7 +377,7 @@ def kb_admin_triggers() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔔 Нудж-проверка",   callback_data="adm:trigger:nudges"),
          InlineKeyboardButton("📅 Месячный отчёт",  callback_data="adm:trigger:monthly")],
         [InlineKeyboardButton("🥗 Анализ питания",  callback_data="adm:trigger:nutrition_analysis")],
-        [InlineKeyboardButton(t("kb_back"), callback_data="adm:home")],
+        [InlineKeyboardButton("« Назад", callback_data="adm:home")],
     ])
 
 
@@ -400,18 +399,18 @@ def kb_session_adapt(adapt_type: str) -> InlineKeyboardMarkup:
     adapt_type: 'deload' | 'light' | 'boost'
     """
     if adapt_type == "boost":
-        accept_text = t("kb_adapt_boost")
+        accept_text = "🔥 Усилить"
     elif adapt_type == "deload":
-        accept_text = t("kb_adapt_deload")
+        accept_text = "✅ Deload-день"
     else:
-        accept_text = t("kb_adapt_light")
+        accept_text = "✅ Облегчить"
 
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(accept_text, callback_data=f"adapt:accept:{adapt_type}"),
-            InlineKeyboardButton(t("kb_adapt_normal"), callback_data="adapt:skip"),
+            InlineKeyboardButton("💪 По плану", callback_data="adapt:skip"),
         ],
         [
-            InlineKeyboardButton(t("kb_adapt_workout"), callback_data="workout_done"),
+            InlineKeyboardButton("💬 Записать тренировку", callback_data="workout_done"),
         ],
     ])
