@@ -281,7 +281,7 @@ TOOL_UPDATE_ATHLETE_CARD = {
         "properties": {
             "goal": {
                 "type": "string",
-                "enum": ["lose_weight", "gain_mass", "endurance", "general_fitness", "peak_performance"],
+                "enum": ["похудеть", "набрать массу", "выносливость", "общая форма", "пик формы"],
                 "description": "Тренировочная цель"
             },
             "fitness_level": {
