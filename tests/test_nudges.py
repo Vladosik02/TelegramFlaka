@@ -11,8 +11,9 @@ import pytest
 import datetime
 from unittest.mock import AsyncMock, patch
 
-from lang import days_word as _days_word, workouts_word as _workouts_word
 from scheduler.nudges import (
+    _days_word,
+    _workouts_word,
     _was_nudge_sent_recently,
     _log_nudge,
     _check_drop_nudge,
