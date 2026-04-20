@@ -126,16 +126,17 @@ jobs:
             git fetch origin
             git reset --hard origin/main
 
-            echo "💾 Backing up DB..."
-            if [ -f data/trainer.db ]; then
-              mkdir -p backups
-              sudo chown -R "$(id -u):$(id -g)" backups/ 2>/dev/null || true
-              cp data/trainer.db "backups/ci-$(date +%Y%m%d-%H%M%S).db" \
-                || echo "⚠️ DB backup skipped (permission issue — run: sudo chown -R mrvald19:mrvald19 /opt/trainer-bot/backups)"
-            fi
+            echo "🔒 Fixing data/ and backups/ permissions for botuser (uid=1001)..."
+            mkdir -p backups
+            sudo chown -R 1001:1001 data/ backups/ 2>/dev/null || true
 
-            echo "🔒 Fixing data/ permissions for botuser (uid=1001)..."
-            sudo chown -R 1001:1001 data/ 2>/dev/null || true
+            echo "💾 Backing up DB via sqlite3.backup (WAL-aware, fails deploy if bad)..."
+            if docker ps --format '{{.Names}}' | grep -q '^trainer_bot$'; then
+              docker exec trainer_bot python -c "import sqlite3, os; from datetime import datetime; ts=datetime.now().strftime('%Y%m%d-%H%M%S'); dst_path='/app/backups/ci-'+ts+'.db'; src=sqlite3.connect('/app/data/trainer.db'); dst=sqlite3.connect(dst_path); src.backup(dst); src.close(); dst.close(); size=os.path.getsize(dst_path); assert size>8192, 'backup too small: '+str(size)+' bytes'; print('Backup OK: '+os.path.basename(dst_path)+' ('+str(size)+' bytes)')" \
+                || { echo "❌ DB backup FAILED — aborting deploy to protect data"; exit 1; }
+            else
+              echo "⚠️ DB backup skipped — trainer_bot container not running (first deploy or manual recovery)"
+            fi
 
             echo "🐳 Rebuilding Docker image..."
             docker compose build --no-cache
