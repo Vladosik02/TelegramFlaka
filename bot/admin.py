@@ -317,7 +317,7 @@ _TRIGGER_LABELS = {
 async def _run_trigger(query, ctx: ContextTypes.DEFAULT_TYPE, task: str) -> None:
     """Запускает задачу вручную и отвечает результатом."""
     label = _TRIGGER_LABELS.get(task, task)
-    bot = query.message.bot
+    bot = ctx.bot
 
     await query.answer(f"Запускаю: {label}…")
 
