@@ -443,20 +443,11 @@ async def _detect_hallucination(
     """
     Детектирует случай «Claude написал 'записал', но tools не вызывал».
     Шлёт уведомление в debug-чат администратора.
-    """
-    _NUTRITION_KEYWORDS = (
-        "съел", "сьел", "поел", "скушал", "кушал", "покушал",
-        "питался", "обед", "завтрак", "ужин", "перекус",
-        "выпил", "ккал", "калори", "питание", "кбжу",
-    )
-    _WORKOUT_DONE_KEYWORDS = (
-        "потренировался", "потренировалась", "занимался", "занималась",
-        "тренил", "тренанулся", "отжался", "отжимался",
-        "приседал", "подтянулся", "выполнил тренировку",
-        "закончил тренировку", "сделал тренировку",
-    )
-    _METRICS_KEYWORDS = ("поспал", "поспала", "сон", "вешу", "вес ")
 
+    Покрытие: 7 из 9 write-tools (save_episode и award_xp намеренно не
+    детектируются — см. `ai/hallucination_rules.py`). Правила
+    data-driven — расширяются в том же модуле.
+    """
     all_tools_called = any(
         (b.type == "tool_use")
         for msg in messages
@@ -466,18 +457,8 @@ async def _detect_hallucination(
     if all_tools_called or not final_text:
         return
 
-    msg_lower = user_message.lower()
-    resp_lower = final_text.lower()
-    expected: list[str] = []
-    if any(kw in msg_lower for kw in _NUTRITION_KEYWORDS):
-        expected.append("save_nutrition")
-    elif any(kw in resp_lower for kw in ("записал", "зафиксировал", "сохранил")):
-        if any(kw in msg_lower for kw in ("ел", "ела", "пил", "пила", "еда", "пицц", "бургер", "рулет", "суп")):
-            expected.append("save_nutrition")
-    if any(kw in msg_lower for kw in _WORKOUT_DONE_KEYWORDS):
-        expected.append("save_workout")
-    if any(kw in msg_lower for kw in _METRICS_KEYWORDS):
-        expected.append("save_metrics")
+    from ai.hallucination_rules import detect_expected_tools
+    expected = detect_expected_tools(user_message, final_text)
 
     if expected:
         try:
