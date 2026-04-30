@@ -8,25 +8,37 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters
 )
-from telegram import Update
+from telegram import Update, BotCommand, MenuButtonCommands, BotCommandScopeDefault, BotCommandScopeChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import TELEGRAM_TOKEN
+from config import TELEGRAM_TOKEN, ADMIN_USER_ID
 from db.connection import init_db, close_connection
 from bot.commands import (
     cmd_start, cmd_stop, cmd_stats, cmd_mode, cmd_help, cmd_reset,
     cmd_export, cmd_profile, cmd_test, cmd_plan, cmd_admin, cmd_setup, cmd_meal,
-    cmd_achievements, cmd_history, cmd_menu, cmd_today, cmd_costs
+    cmd_achievements, cmd_history, cmd_menu, cmd_today, cmd_costs, cmd_workout
 )
 from bot.handlers import handle_message, handle_callback, handle_voice, handle_photo
 from scheduler.jobs import setup_scheduler
 
 # ─── Логирование ─────────────────────────────────────────────────────────────
+import sys
+import io as _io
+
+# StreamHandler с явным UTF-8 — иначе в Docker без PYTHONIOENCODING
+# Python открывает stderr в ASCII-режиме и падает на кириллице.
+try:
+    _utf8_stream = _io.TextIOWrapper(
+        sys.stdout.buffer, encoding="utf-8", line_buffering=True
+    )
+except AttributeError:
+    _utf8_stream = sys.stdout  # fallback: pytest, REPL и т.п.
+
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
     handlers=[
-        logging.StreamHandler(),
+        logging.StreamHandler(_utf8_stream),
         logging.FileHandler("trainer.log", encoding="utf-8")
     ]
 )
@@ -49,6 +61,35 @@ async def post_init(app: Application) -> None:
     scheduler.start()
     logger.info("✅ APScheduler успешно запущен внутри цикла событий.")
 
+    # Регистрация команд в Telegram — появятся в меню "/" у пользователя
+    base_commands = [
+        BotCommand("menu",         "Главное меню"),
+        BotCommand("today",        "Дашборд дня"),
+        BotCommand("stats",        "Статистика за неделю"),
+        BotCommand("plan",         "План тренировок"),
+        BotCommand("workout",      "Тренировка на сегодня"),
+        BotCommand("profile",      "Мой профиль"),
+        BotCommand("achievements", "Уровень и ачивки"),
+        BotCommand("history",      "Хроника тренировок"),
+        BotCommand("costs",        "Расходы на AI"),
+        BotCommand("help",         "Справка"),
+        BotCommand("start",        "Начать или возобновить"),
+    ]
+    admin_commands = base_commands + [
+        BotCommand("admin", "Панель администратора"),
+    ]
+
+    try:
+        await app.bot.set_my_commands(base_commands, scope=BotCommandScopeDefault())
+        if ADMIN_USER_ID != 0:
+            await app.bot.set_my_commands(
+                admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID)
+            )
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        logger.info("✅ set_my_commands и set_chat_menu_button выполнены.")
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось зарегистрировать команды в Telegram: {e}")
+
 def main() -> None:
     # 1. Инициализация БД
     # Убедись, что на сервере выполнен: sudo chown -R 1001:1001 /opt/trainer-bot/data
@@ -57,6 +98,29 @@ def main() -> None:
         logger.info("Database ready")
     except Exception as e:
         logger.error(f"❌ Критическая ошибка при инициализации БД: {e}")
+        return
+
+    # 1.5. Startup-валидация: все tools из ALL_TOOLS должны иметь обработчик в executor
+    try:
+        from ai.tools import ALL_TOOLS
+        from ai.tool_executor import _DISPATCH
+        schema_tools = {t["name"] for t in ALL_TOOLS}
+        handled_tools = set(_DISPATCH.keys())
+        missing_handlers = schema_tools - handled_tools
+        unknown_handlers = handled_tools - schema_tools
+        if missing_handlers or unknown_handlers:
+            logger.error(
+                f"❌ Tool mismatch! Нет обработчиков для: {missing_handlers}. "
+                f"Лишние обработчики (нет в схеме): {unknown_handlers}"
+            )
+            raise RuntimeError(
+                f"Tool executor mismatch: missing={missing_handlers}, extra={unknown_handlers}"
+            )
+        logger.info(f"✅ Tool validation passed: {len(schema_tools)} tools OK")
+    except RuntimeError:
+        return
+    except Exception as e:
+        logger.error(f"❌ Tool validation error: {e}")
         return
 
     # 2. Создаём Application с хуком post_init
@@ -81,6 +145,7 @@ def main() -> None:
     app.add_handler(CommandHandler("menu",         cmd_menu))
     app.add_handler(CommandHandler("today",        cmd_today))
     app.add_handler(CommandHandler("costs",        cmd_costs))
+    app.add_handler(CommandHandler("workout",      cmd_workout))
 
     # 4. Обработка контента (Текст, Голос, Фото)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

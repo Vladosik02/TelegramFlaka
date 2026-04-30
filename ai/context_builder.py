@@ -14,11 +14,11 @@ import datetime
 import os
 from db.queries.user import get_user
 from db.queries.workouts import (
-    get_workouts_range, get_metrics_range,
+    get_metrics_range,
     get_today_workout, get_streak, get_weekly_stats
 )
 from db.queries.context import (
-    get_today_checkins, get_recent_conversation,
+    get_recent_conversation,
     count_conversation_messages, clear_conversation, save_context_summary,
     get_last_message_time, get_all_conversation_messages,
     add_conversation_message,
@@ -31,7 +31,8 @@ from db.queries.memory import (
     get_l3_brief, get_l3_deep,
     get_l4_intelligence,
 )
-from config import get_trainer_mode, PROMPTS_DIR
+from config import get_trainer_mode, PROMPTS_DIR, MODEL, MAX_TOKENS, MODEL_CRUD, MAX_TOKENS_CRUD
+from ai.morph import lemmatize_text, build_lemma_set
 
 logger = logging.getLogger(__name__)
 
@@ -46,129 +47,6 @@ def get_system_prompt(mode: str) -> str:
     fname = "system_max.txt" if mode == "MAX" else "system_light.txt"
     return _load_prompt(fname)
 
-
-def build_morning_context(telegram_id: int) -> dict:
-    """23 поля для утреннего чек-ина."""
-    user = get_user(telegram_id)
-    if not user:
-        return {}
-    workouts = get_workouts_range(user["id"], days=2)
-    metrics = get_metrics_range(user["id"], days=7)
-    streak = get_streak(user["id"])
-    mode = get_trainer_mode()
-
-    last_workout = "не было" if not workouts else (
-        f"{workouts[0]['type'] or 'тренировка'}, "
-        f"интенсивность {workouts[0]['intensity']}/10"
-        if workouts[0]['completed'] else "не завершена"
-    )
-    last_sleep = "неизвестен"
-    avg_energy = "нет данных"
-    if metrics:
-        if metrics[0].get("sleep_hours"):
-            last_sleep = f"{metrics[0]['sleep_hours']} ч"
-        energies = [m["energy"] for m in metrics if m.get("energy")]
-        if energies:
-            avg_energy = f"{sum(energies)/len(energies):.1f}/5"
-
-    prompt_template = _load_prompt("morning_checkin.txt")
-    prompt = prompt_template.format(
-        name=user.get("name") or "атлет",
-        mode=mode,
-        goal=user.get("goal") or "улучшить форму",
-        fitness_level=user.get("fitness_level") or "beginner",
-        streak=streak,
-        last_workout=last_workout,
-        last_sleep=last_sleep,
-        avg_energy=avg_energy,
-    )
-    return {
-        "system": get_system_prompt(mode),
-        "prompt": prompt,
-        "mode": mode,
-        "user": user,
-    }
-
-
-def build_afternoon_context(telegram_id: int) -> dict:
-    user = get_user(telegram_id)
-    if not user:
-        return {}
-    today = datetime.date.today().isoformat()
-    checkins = get_today_checkins(user["id"])
-    mode = get_trainer_mode()
-    morning = next((c for c in checkins if c["time_slot"] == "morning"), None)
-    today_workout = get_today_workout(user["id"])
-
-    morning_status = "не отвечал" if not morning else (
-        "ответил утром" if morning["status"] == "done" else "пропустил"
-    )
-    workout_planned = "да" if mode == "MAX" else "опционально"
-
-    prompt_template = _load_prompt("afternoon_checkin.txt")
-    prompt = prompt_template.format(
-        name=user.get("name") or "атлет",
-        mode=mode,
-        morning_status=morning_status,
-        workout_planned=workout_planned,
-        current_time=datetime.datetime.now().strftime("%H:%M"),
-    )
-    return {
-        "system": get_system_prompt(mode),
-        "prompt": prompt,
-        "mode": mode,
-        "user": user,
-    }
-
-
-def build_evening_context(telegram_id: int) -> dict:
-    user = get_user(telegram_id)
-    if not user:
-        return {}
-    today_workout = get_today_workout(user["id"])
-    metrics_today = get_metrics_range(user["id"], days=1)
-    weekly = get_weekly_stats(user["id"])
-    streak = get_streak(user["id"])
-    mode = get_trainer_mode()
-
-    workout_summary = "не было"
-    if today_workout:
-        w = today_workout
-        workout_summary = (
-            f"{w['type'] or 'тренировка'} {w['duration_min'] or '?'} мин, "
-            f"интенсивность {w['intensity'] or '?'}/10"
-        )
-
-    daily_metrics = "нет данных"
-    if metrics_today:
-        m = metrics_today[0]
-        parts = []
-        if m.get("energy"):      parts.append(f"энергия {m['energy']}/5")
-        if m.get("sleep_hours"): parts.append(f"сон {m['sleep_hours']}ч")
-        if m.get("mood"):        parts.append(f"настроение {m['mood']}/5")
-        if m.get("water_liters"): parts.append(f"вода {m['water_liters']}л")
-        if parts: daily_metrics = ", ".join(parts)
-
-    weekly_progress = (
-        f"{weekly['workouts_done']}/{weekly['workouts_total']} тренировок, "
-        f"ср. интенсивность {weekly['avg_intensity']}"
-    )
-
-    prompt_template = _load_prompt("evening_summary.txt")
-    prompt = prompt_template.format(
-        name=user.get("name") or "атлет",
-        mode=mode,
-        workout_summary=workout_summary,
-        daily_metrics=daily_metrics,
-        streak=streak,
-        weekly_progress=weekly_progress,
-    )
-    return {
-        "system": get_system_prompt(mode),
-        "prompt": prompt,
-        "mode": mode,
-        "user": user,
-    }
 
 
 def build_weekly_report_context(telegram_id: int) -> dict:
@@ -237,55 +115,157 @@ def build_chat_context(telegram_id: int) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ─── Классификатор сообщений ──────────────────────────────────────────────
-_ANALYTICS_WORDS = (
-    "прогресс", "динамик", "за месяц", "за год", "результат", "статистик",
-    "аналитик", "сравн", "тренд", "итог", "достижен", "рекорд всех времён",
-    "как я иду", "что изменилось", "чего добился", "сводк",
+#
+# Слова-триггеры написаны в человекочитаемой форме.
+# build_lemma_set() лемматизирует их через pymorphy3 при загрузке модуля.
+# _classify_message() лемматизирует входной текст и сравнивает frozenset'ы.
+#
+# Это устраняет два класса ошибок подстрокового поиска:
+#   - Ложные срабатывания: "весна" ≠ "вес", "залить" ≠ "зал", "жираф" ≠ "жир"
+#   - Пропуски морфологии: "покачался"→"качаться" ✓, "потренировался"→"тренироваться" ✓
+#
+# Многословные фразы (нельзя разбить на отдельные слова-триггеры) вынесены
+# в _*_PHRASES и проверяются простым подстроковым поиском по нижнему регистру.
+
+_ANALYTICS_WORDS_RAW = (
+    "прогресс", "динамика", "результат", "статистика", "аналитика",
+    "сравнение", "сравнить", "тренд", "итог", "достижение", "рекорд", "сводка",
+)
+# Фразы, которые нельзя разложить на отдельные смысловые токены
+_ANALYTICS_PHRASES = (
+    "за месяц", "за год", "как я иду", "что изменилось",
+    "чего добился", "рекорд всех времён",
 )
 
-_PLAN_WORDS = (
-    "план", "планир", "расписан", "schedule", "тренировк на неде",
-    "на следующей неде", "на этой неде", "скорректируй план",
-    "измени план", "подправь план", "покажи план", "какой план",
-    "что тренир", "что делать сегодня", "что делать завтра",
+_PLAN_WORDS_RAW = (
+    "план", "планировать", "расписание", "schedule",
+    "прогноз", "нагрузка",
+)
+_PLAN_PHRASES = (
+    "на следующей неделе", "на этой неделе",
+    "скорректируй план", "измени план", "подправь план",
+    "покажи план", "какой план",
+    "что делать сегодня", "что делать завтра",
+    "с каким весом", "какую нагрузку", "что брать",
+    "подскажи нагрузку",
 )
 
-_HEALTH_WORDS = (
-    "боль", "болит", "травм", "ноет", "растяжен", "ушиб", "врач", "доктор",
-    "добавк", "витамин", "протеин", "принима", "дозировк", "аллерг",
-    "непереносим", "реакц", "побочн", "суставы", "мышца", "связк",
+_HEALTH_WORDS_RAW = (
+    "боль", "болеть", "травма", "ныть", "растяжение", "ушибить",
+    "врач", "доктор",
+    "добавка", "витамин", "протеин", "принимать", "дозировка",
+    "аллергия", "непереносимость", "реакция", "побочный",
+    "сустав", "мышца", "связка",
 )
-_FOOD_WORDS = (
-    "поел", "съел", "поедал", "питание", "еду", "едой", "калор", "белок",
-    "углевод", "жир", "завтрак", "обед", "ужин", "перекус", "голод",
-    "диет", "рацион", "продукт", "готовлю", "приготов", "макро", "ккал",
-    "г белка", "кето",
+
+_FOOD_WORDS_RAW = (
+    "поесть",       # поел, поела
+    "съесть",       # съел, съела
+    "поедать",      # поедал
+    "питание",
+    "есть",         # ем, ест, ешь (осторожно — омоним "есть"/"быть", но в фитнес-контексте OK)
+    "калория",      # калорий, калории
+    "белок",        # г белка, белков
+    "углевод",
+    "жир",          # жир — жираф→жираф (разные леммы)
+    "завтрак",
+    "обед",
+    "ужин",
+    "перекус",
+    "голодать",     # голодал, голодала
+    "диета",
+    "рацион",
+    "продукт",
+    "готовить",
+    "приготовить",
+    "макро",
+    "ккал",
+    "кето",         # кето→кеть (pymorphy3), пользователь тоже напишет "кето"→"кеть" ✓
+    "покушать",     # покушал, покушала
+    "пообедать",    # пообедал
+    "поужинать",    # поужинал
+    "позавтракать", # позавтракал
 )
-_TRAINING_WORDS = (
-    "тренировк", "упражнен", "подход", "повтор", "вес", "жим", "приседан",
-    "подтягива", "пробеж", "кардио", "силов", "качаться", "качал",
-    "тренился", "трениров", "дедлайн", "становая", "выпады", "планк",
-    "гантел", "штанг", "кроссфит", "спортзал", "зал", "пробежк",
+
+_TRAINING_WORDS_RAW = (
+    "тренировка",
+    "упражнение",
+    "подход",
+    "повтор",
+    "вес",           # весна→весна, залить→залить — ложных срабатываний нет ✓
+    "жим",
+    "приседание",    # приседал→приседать (другой глагол, добавляем оба)
+    "приседать",
+    "присесть",      # присел→присесть ✓
+    "подтягивание",
+    "подтягиваться", # подтягивался→подтягиваться ✓
+    "пробежка",
+    "пробежать",     # пробежал→пробежать ✓
+    "кардио",
+    "силовой",       # силовая, силовые → силовой ✓
+    "качать",        # качал→качать ✓
+    "качаться",      # качался→качаться ✓
+    "тренироваться", # тренировался, тренировалась ✓
+    "потренироваться",
+    "трениться",     # тренился ✓
+    "заниматься",    # занимался, занималась ✓
+    "позаниматься",
+    "становой",      # становая, становой ✓
+    "выпад",
+    "планк",
+    "гантель",
+    "штанга",
+    "кроссфит",      # кроссфит→кроссфита (pymorphy3), консистентно ✓
+    "спортзал",
+    "зал",           # залить→залить ≠ зал ✓
+    "бег",
+    "отжимание",
+    "турник",
+    "брусья",
+    "дедлифт",
+    "плавать",       # плавал, плавала ✓
+    "поднять",       # поднял, подняла ✓
+    "велосипед",
+    "нагрузка",
+    "интенсивность",
 )
+
+# Вычисляем лемма-сеты один раз при загрузке модуля
+_ANALYTICS_LEMMAS: frozenset = build_lemma_set(_ANALYTICS_WORDS_RAW)
+_PLAN_LEMMAS: frozenset = build_lemma_set(_PLAN_WORDS_RAW)
+_HEALTH_LEMMAS: frozenset = build_lemma_set(_HEALTH_WORDS_RAW)
+_FOOD_LEMMAS: frozenset = build_lemma_set(_FOOD_WORDS_RAW)
+_TRAINING_LEMMAS: frozenset = build_lemma_set(_TRAINING_WORDS_RAW)
 
 
 def _classify_message(text: str) -> frozenset:
     """
-    Возвращает frozenset тегов: {"health", "food", "training"}.
-    Используется для выбора слоёв памяти.
+    Возвращает frozenset тегов: {"health", "food", "training", "analytics", "plan"}.
+    Используется для выбора слоёв памяти в build_layered_context().
+
+    Алгоритм:
+      1. Лемматизируем входной текст через pymorphy3 (синглтон из ai.morph).
+      2. Проверяем пересечение лемм с предвычисленными лемма-сетами триггеров.
+      3. Для многословных фраз делаем простой подстроковый поиск по lower().
+
+    Fallback (pymorphy3 недоступен): lemmatize_text() возвращает токены без
+    лемматизации, build_lemma_set() — raw слова. Точность ниже, но без краша.
     """
     t = text.lower()
+    lemmas = lemmatize_text(t)
     tags = set()
-    if any(w in t for w in _HEALTH_WORDS):
+
+    if lemmas & _HEALTH_LEMMAS:
         tags.add("health")
-    if any(w in t for w in _FOOD_WORDS):
+    if lemmas & _FOOD_LEMMAS:
         tags.add("food")
-    if any(w in t for w in _TRAINING_WORDS):
+    if lemmas & _TRAINING_LEMMAS:
         tags.add("training")
-    if any(w in t for w in _ANALYTICS_WORDS):
+    if lemmas & _ANALYTICS_LEMMAS or any(ph in t for ph in _ANALYTICS_PHRASES):
         tags.add("analytics")
-    if any(w in t for w in _PLAN_WORDS):
+    if lemmas & _PLAN_LEMMAS or any(ph in t for ph in _PLAN_PHRASES):
         tags.add("plan")
+
     return frozenset(tags)
 
 
@@ -316,8 +296,8 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
             inj = json.loads(user["injuries"])
             if inj:
                 lines.append(f"Активные травмы: {', '.join(inj)}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[CTX] injuries JSON parse failed for uid={uid}: {e}")
     # fitness_score (Фаза 8.2) — загружается в L0 всегда (~8 tok)
     fs = get_fitness_score(uid)
     if fs:
@@ -327,28 +307,74 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
             f"(тест {fs['tested_at']})"
         )
 
-    # ── Текущий вес + последние метрики из metrics (Agent Fix) ─────────────
+    # ── Вес + метрики с явной давностью (fix stale metrics bug) ─────────────
+    # Проблема-до: AI видел "Последние метрики (2026-03-21): сон 10ч" и считал
+    # эти данные текущим фактом даже через 3 дня.
+    # Решение: явно маркируем давность (сегодня/вчера/N дн. назад) +
+    # всегда показываем блок "Статус сегодня" с тем что НЕ записано.
     try:
+        _today      = datetime.date.today()
+        _today_str  = _today.isoformat()
+        _yest_str   = (_today - datetime.timedelta(days=1)).isoformat()
+
         recent_metrics = get_metrics_range(uid, days=30)
+
         if recent_metrics:
-            # Последний вес
+            # ─ Вес: медленный показатель — всегда показываем с датой ──────
             for m in recent_metrics:
                 if m.get("weight_kg"):
-                    lines.append(f"Текущий вес: {m['weight_kg']} кг (на {m['date']})")
+                    lines.append(f"Вес: {m['weight_kg']} кг (на {m['date']})")
                     break
-            # Последние сон/энергия/настроение (самая свежая запись)
+
+            # ─ Сон/энергия/настроение: самая свежая запись с явной давностью
             latest = recent_metrics[0]
-            parts = []
+            metric_date = latest.get("date", "")
+            transient = []
             if latest.get("sleep_hours"):
-                parts.append(f"сон {latest['sleep_hours']}ч")
+                transient.append(f"сон {latest['sleep_hours']}ч")
             if latest.get("energy"):
-                parts.append(f"энергия {latest['energy']}/5")
+                transient.append(f"энергия {latest['energy']}/5")
             if latest.get("mood"):
-                parts.append(f"настроение {latest['mood']}/5")
-            if parts:
-                lines.append(f"Последние метрики ({latest['date']}): {', '.join(parts)}")
-    except Exception:
-        pass
+                transient.append(f"настроение {latest['mood']}/5")
+
+            if transient:
+                if metric_date == _today_str:
+                    prefix = "Метрики сегодня"
+                elif metric_date == _yest_str:
+                    prefix = "Метрики вчера"
+                else:
+                    try:
+                        days_ago = (_today - datetime.date.fromisoformat(metric_date)).days
+                        prefix = f"Метрики ({days_ago} дн. назад, {metric_date[5:]})"
+                    except Exception:
+                        prefix = f"Метрики ({metric_date})"
+                lines.append(f"{prefix}: {', '.join(transient)}")
+
+        # ─ Статус сегодня: явно что записано / что нет ───────────────────
+        # Блок всегда присутствует — даёт AI сигнал о текущем дне.
+        _today_m = next(
+            (m for m in recent_metrics if m.get("date") == _today_str), None
+        ) if recent_metrics else None
+
+        _recorded = []
+        _missing  = []
+        if _today_m and _today_m.get("sleep_hours"):
+            _recorded.append(f"сон {_today_m['sleep_hours']}ч ✅")
+        else:
+            _missing.append("сон")
+        if _today_m and _today_m.get("energy"):
+            _recorded.append(f"энергия {_today_m['energy']}/5 ✅")
+        else:
+            _missing.append("энергия")
+
+        _status_parts = _recorded[:]
+        if _missing:
+            _status_parts.append(f"не записано: {', '.join(_missing)}")
+        if _status_parts:
+            lines.append(f"Статус сегодня ({_today_str[5:]}): {', '.join(_status_parts)}")
+
+    except Exception as e:
+        logger.warning(f"[CTX] recent_metrics load failed for uid={uid}: {e}")
 
     # ── Место тренировок (Agent Fix) ──────────────────────────────────────
     location_map = {
@@ -357,6 +383,70 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
     }
     loc = user.get("training_location", "flexible")
     lines.append(f"Место тренировок: {location_map.get(loc, loc)}")
+
+    # ── Биопрофиль (расчётный) — возраст/рост/вес → actionable параметры ──
+    try:
+        age       = surface.get("age")
+        height_cm = surface.get("height_cm")
+        weight_kg = None
+        try:
+            _rm = get_metrics_range(uid, days=30)
+            for _m in (_rm or []):
+                if _m.get("weight_kg"):
+                    weight_kg = _m["weight_kg"]
+                    break
+        except Exception:
+            pass
+
+        bio_lines = []
+
+        if age:
+            if age <= 25:
+                bio_lines.append(f"Восстановление: высокое ({age} лет) — 24-48ч достаточно")
+                bio_lines.append("Прогрессия: агрессивная — пиковый гормональный фон, +2.5-5 кг/2 нед на силовых реально")
+            elif age <= 35:
+                bio_lines.append(f"Восстановление: хорошее ({age} лет) — 48-72ч между сессиями")
+                bio_lines.append("Прогрессия: умеренная — +1.5-2.5 кг/2 нед")
+            elif age <= 45:
+                bio_lines.append(f"Восстановление: среднее ({age} лет) — 48-72ч обязательно, deload чаще")
+                bio_lines.append("Прогрессия: консервативная — +1-1.5 кг/мес, акцент объём")
+            else:
+                bio_lines.append(f"Восстановление: сниженное ({age} лет) — приоритет восстановлению")
+                bio_lines.append("Прогрессия: медленная — +0.5-1 кг/мес, больше частота меньше объём")
+
+        if age and height_cm and weight_kg:
+            bmr  = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+            tdee = round(bmr * 1.55 / 50) * 50
+            bio_lines.append(f"TDEE расчётный: ~{tdee} ккал/день (умеренная активность)")
+
+        if height_cm and weight_kg:
+            lbm_max   = height_cm - 100
+            target_10 = round(lbm_max / 0.90)
+            target_15 = round(lbm_max / 0.85)
+            gap = round(target_10 - weight_kg)
+            if gap > 0:
+                bio_lines.append(f"Натуральный потенциал: {target_10}-{target_15} кг (запас +{gap}+ кг сухой массы от {weight_kg} кг)")
+
+        if bio_lines:
+            lines.append("## Биопрофиль (расчётный)")
+            lines.extend(bio_lines)
+    except Exception as e:
+        logger.warning(f"[CTX] bio_profile computation failed for uid={uid}: {e}")
+
+    # ── Погода (scheduler/weather.py) — ~30-50 tok ────────────────────────
+    try:
+        from scheduler.weather import (
+            get_weather_for_user, get_user_location,
+            format_weather_context_for_ai,
+        )
+        lat, lon, city = get_user_location(uid)
+        weather = get_weather_for_user(uid, lat, lon)
+        if weather:
+            weather_ctx = format_weather_context_for_ai(weather, city)
+            if weather_ctx:
+                lines.append(weather_ctx)
+    except Exception as e:
+        logger.debug(f"[CTX] weather load failed for uid={uid}: {e}")
 
     return "\n".join(lines)
 
@@ -451,8 +541,8 @@ def _build_l2_nutrition(uid: int, deep: bool) -> str | None:
         elif log_days == 0:
             lines.append("Питание: данных за последние 7 дней нет")
 
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[CTX] nutrition 7-day summary failed for uid={uid}: {e}")
 
     # ── Deep-режим: доп. поля + журнал 3 дней + инсайты ─────────────────────
     if deep:
@@ -711,6 +801,7 @@ def _build_l4_intelligence(uid: int) -> str | None:
         intel.get("weekly_digest"),
         intel.get("ai_observations"),
         intel.get("trend_summary"),
+        intel.get("bio_insights"),
     ])
     if not has_data:
         return None
@@ -723,6 +814,8 @@ def _build_l4_intelligence(uid: int) -> str | None:
             lines.append(f"Наблюдения: {'; '.join(obs[-3:])}")  # только последние 3
     if intel.get("trend_summary"):
         lines.append(f"Тренд: {intel['trend_summary']}")
+    if intel.get("bio_insights"):
+        lines.append(f"Биоанализ: {intel['bio_insights']}")
     if intel.get("motivation_level") and intel["motivation_level"] != "normal":
         level_map = {"low": "низкая ⚠️", "high": "высокая 🔥"}
         lines.append(f"Мотивация: {level_map.get(intel['motivation_level'], '')}")
@@ -736,7 +829,15 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
     4-слойный контекст для свободного диалога.
     Классифицирует сообщение и загружает только нужные слои памяти.
 
-    Бюджет токенов:
+    Фаза 17 — Tiered context:
+      'crud' tier (запись еды/тренировки/метрик без вопросов):
+        L0 + релевантный deep слой, история ×3, Haiku.
+        Экономия: ~2500 tok tools + ~600 tok context + history = ~40-50× дешевле.
+
+      'full' tier (аналитика/план/вопросы/длинный текст):
+        Полный контекст, история ×10, Sonnet.
+
+    Бюджет токенов (full tier):
       L0 всегда         ~150
       L1 при health     ~150
       L2 brief всегда   ~120  /  deep при food   ~200
@@ -748,6 +849,9 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
       Плюс история      ~600–900
       Итого max         ~1870–2200 tok  ✅ < 3000
     """
+    # Импортируем здесь чтобы избежать circular import (tools ↔ context_builder)
+    from ai.tools import get_tools_for_tags, classify_request_tier
+
     user = get_user(telegram_id)
     if not user:
         return {}
@@ -755,12 +859,16 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
     mode = get_trainer_mode()
     uid = user["id"]
     tags = _classify_message(user_text)
+    tier = classify_request_tier(tags, user_text)
     streak = get_streak(uid)
+
+    # ── Лимит истории: CRUD — 3 сообщения, full — 10 ───────────────────────
+    history_limit = 3 if tier == "crud" else 10
 
     # ── Собираем блоки памяти ────────────────────────────────────────────
     memory_blocks: list[str] = []
 
-    # L0: всегда
+    # L0: всегда (имя, цель, уровень — нужны даже для CRUD)
     l0 = _build_l0_card(user, uid, streak)
     if l0:
         memory_blocks.append(l0)
@@ -771,25 +879,29 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
         if l1:
             memory_blocks.append(l1)
 
-    # L2: brief всегда, deep при food
-    l2 = _build_l2_nutrition(uid, deep="food" in tags)
-    if l2:
-        memory_blocks.append(l2)
+    # L2: brief всегда при full; deep при food; пропускаем для metrics-CRUD
+    if tier == "full" or "food" in tags:
+        l2 = _build_l2_nutrition(uid, deep="food" in tags)
+        if l2:
+            memory_blocks.append(l2)
 
-    # L3: brief всегда, deep при training
-    l3 = _build_l3_training(uid, deep="training" in tags)
-    if l3:
-        memory_blocks.append(l3)
+    # L3: для CRUD — только при training-контексте (deep); для full — всегда brief
+    if tier == "full" or "training" in tags:
+        l3 = _build_l3_training(uid, deep="training" in tags)
+        if l3:
+            memory_blocks.append(l3)
 
-    # L4: всегда
-    l4 = _build_l4_intelligence(uid)
-    if l4:
-        memory_blocks.append(l4)
+    # L4: только при full tier (AI-дайджест не нужен для простой записи)
+    if tier == "full":
+        l4 = _build_l4_intelligence(uid)
+        if l4:
+            memory_blocks.append(l4)
 
-    # Daily chronicle: всегда (если есть накопленные резюме)
-    chronicle = _build_daily_chronicle(uid, days=5)
-    if chronicle:
-        memory_blocks.append(chronicle)
+    # Daily chronicle: только при full tier
+    if tier == "full":
+        chronicle = _build_daily_chronicle(uid, days=5)
+        if chronicle:
+            memory_blocks.append(chronicle)
 
     # Monthly chronicle: только при analytics-контексте (~100 tok)
     if "analytics" in tags:
@@ -803,53 +915,58 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
         if active_plan:
             memory_blocks.append(active_plan)
 
-    # Episodic memory (Фаза 10.5): важные эпизоды (~80-150 tok)
-    try:
-        from db.queries.episodic import format_episodic_context
-        episodic = format_episodic_context(uid, limit=8)
-        if episodic:
-            memory_blocks.append(episodic)
-    except Exception:
-        pass  # эпизодическая память — некритична, не блокируем основной поток
+    # Episodic memory (Фаза 10.5): только при full tier с нужными тегами
+    if tier == "full":
+        _EPISODIC_TAGS = {"training", "health", "goals", "analytics"}
+        if tags & _EPISODIC_TAGS:
+            try:
+                from db.queries.episodic import format_episodic_context
+                episodic = format_episodic_context(uid, limit=8)
+                if episodic:
+                    memory_blocks.append(episodic)
+            except Exception as e:
+                logger.warning(f"[CTX] episodic memory load failed for uid={uid}: {e}")
 
-    # XP/уровень (Фаза 10.4): для персонализации мотивации (~30 tok)
-    try:
-        from db.queries.gamification import get_user_level_info
-        xp_info = get_user_level_info(uid)
-        if xp_info and xp_info["total_xp"] > 0:
-            xp_line = (
-                f"## Прогресс атлета (XP)\n"
-                f"Уровень {xp_info['current_level']} — {xp_info['level_name']} "
-                f"| {xp_info['total_xp']} XP"
-            )
-            if xp_info.get("streak_days", 0) > 1:
-                xp_line += f" | Стрик: {xp_info['streak_days']} дн. 🔥"
-            if xp_info.get("xp_to_next_level", 0) > 0:
-                xp_line += f" | До следующего уровня: {xp_info['xp_to_next_level']} XP"
-            memory_blocks.append(xp_line)
-    except Exception:
-        pass
+    # XP/уровень (Фаза 10.4): только при full tier (~30 tok)
+    if tier == "full":
+        try:
+            from db.queries.gamification import get_user_level_info
+            xp_info = get_user_level_info(uid)
+            if xp_info and xp_info["total_xp"] > 0:
+                xp_line = (
+                    f"## Прогресс атлета (XP)\n"
+                    f"Уровень {xp_info['current_level']} — {xp_info['level_name']} "
+                    f"| {xp_info['total_xp']} XP"
+                )
+                if xp_info.get("streak_days", 0) > 1:
+                    xp_line += f" | Стрик: {xp_info['streak_days']} дн. 🔥"
+                if xp_info.get("xp_to_next_level", 0) > 0:
+                    xp_line += f" | До следующего уровня: {xp_info['xp_to_next_level']} XP"
+                memory_blocks.append(xp_line)
+        except Exception as e:
+            logger.warning(f"[CTX] XP/level info load failed for uid={uid}: {e}")
 
-    # Recovery Score (Фаза 12.3): готовность к тренировке (~30 tok)
-    try:
-        from db.queries.recovery import format_recovery_block
-        recovery_block = format_recovery_block(uid)
-        if recovery_block:
-            memory_blocks.append(f"## Состояние восстановления\n{recovery_block}")
-    except Exception:
-        pass
+    # Recovery Score (Фаза 12.3): только при full tier (~30 tok)
+    if tier == "full":
+        try:
+            from db.queries.recovery import format_recovery_block
+            recovery_block = format_recovery_block(uid)
+            if recovery_block:
+                memory_blocks.append(f"## Состояние восстановления\n{recovery_block}")
+        except Exception as e:
+            logger.warning(f"[CTX] recovery score load failed for uid={uid}: {e}")
 
-    # Периодизация (Фаза 12.2): текущая фаза мезоцикла (~40 tok)
-    try:
-        from db.queries.periodization import format_period_block
-        period_block = format_period_block(uid)
-        if period_block:
-            memory_blocks.append(period_block)
-    except Exception:
-        pass
+    # Периодизация (Фаза 12.2): только при full tier (~40 tok)
+    if tier == "full":
+        try:
+            from db.queries.periodization import format_period_block
+            period_block = format_period_block(uid)
+            if period_block:
+                memory_blocks.append(period_block)
+        except Exception as e:
+            logger.warning(f"[CTX] periodization block load failed for uid={uid}: {e}")
 
     # ── Контекстные подсказки действий (Фаза 13.7) ──────────────────────────
-    # Усиливаем инструкции системного промпта конкретными хинтами для текущего сообщения
     action_hints: list[str] = []
     if "food" in tags:
         action_hints.append(
@@ -874,7 +991,9 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
         )
     if "plan" in tags:
         action_hints.append(
-            "📋 Запрос плана → вызови get_current_plan для получения актуального плана."
+            "📋 Запрос плана → вызови get_current_plan для получения актуального плана. "
+            "Если вопрос про конкретные веса/нагрузку → вызови get_workout_prediction "
+            "для прогноза с учётом recovery, мезоцикла и прошлых результатов."
         )
 
     # ── Компонуем system prompt ──────────────────────────────────────────
@@ -899,20 +1018,29 @@ def build_layered_context(telegram_id: int, user_text: str = "") -> dict:
         )
         full_system += hints_block
 
-    history = get_recent_conversation(uid, limit=10)
+    history = get_recent_conversation(uid, limit=history_limit)
 
-    logger.debug(
-        f"[LAYERS] user={telegram_id} tags={set(tags)} "
-        f"blocks={len(memory_blocks)} history={len(history)} "
-        f"plan={'yes' if 'plan' in tags else 'no'}"
+    # Выбираем tools и модель для этого запроса
+    tools  = get_tools_for_tags(tags)
+    model  = MODEL_CRUD if tier == "crud" else MODEL
+    max_tokens = MAX_TOKENS_CRUD if tier == "crud" else MAX_TOKENS
+
+    logger.info(
+        f"[LAYERS] user={telegram_id} tier={tier} tags={set(tags)} "
+        f"blocks={len(memory_blocks)} tools={len(tools)} "
+        f"history={len(history)} model={'haiku' if model != MODEL else 'sonnet'}"
     )
 
     return {
-        "system":  full_system,
-        "history": history,
-        "mode":    mode,
-        "user":    user,
-        "tags":    set(tags),   # для отладки
+        "system":     full_system,
+        "history":    history,
+        "mode":       mode,
+        "user":       user,
+        "tags":       set(tags),
+        "tier":       tier,        # 'crud' | 'full'
+        "tools":      tools,       # отфильтрованный набор
+        "model":      model,       # Haiku для crud, Sonnet для full
+        "max_tokens": max_tokens,  # 1200 для crud, 3000 для full
     }
 
 

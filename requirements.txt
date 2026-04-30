@@ -4,10 +4,7 @@ apscheduler==3.10.4
 python-dotenv==1.0.0
 openai>=1.0.0
 matplotlib
-pandas
-numpy
-aiosqlite
 pytz
-aiohttp
+pymorphy3>=2.0.2
 pytest>=7.0.0
 pytest-asyncio>=0.21.0

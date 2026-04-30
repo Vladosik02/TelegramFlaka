@@ -1,176 +1,291 @@
-# Memory
+# Flaka — Coding Guide
 
-## Me
-Vladislav (Vlad), 23 года, разработчик персонального Telegram-бота-тренера.
-Цель: набрать массу. Тренируется дома. Рост 178 см.
-
-## Projects
-| Name | What | Status |
-|------|------|--------|
-| **Trainer Bot** | Telegram-бот личный тренер «Алекс» (MAX/LIGHT режимы, AI на Anthropic API) | 🟢 Продакшн на Google Cloud VM |
-| **Фаза 7** | Beyond MVP: питание, exercise_results, онбординг, БД v2 | ✅ Закрыта |
-| **Фаза 8** | Analytics, Plans & Proactive AI | ✅ Закрыта |
-| **Фаза 9** | Post-MVP Polish: NLP-парсеры, онбординг, /meal, история планов | ✅ Закрыта |
-| **Фаза 10** | Intelligent Agent & Gamification: Claude Tool Use, Vision, XP/ачивки, память | ✅ Закрыта |
-| **Фаза 11** | UX/UI Polish: /menu, inline keyboards, callback routing | ✅ Закрыта |
-| **Фаза 12** | Advanced Analytics: charts (12.1), periodization (12.2), recovery score (12.3) | ✅ Закрыта |
-| **Agent Fix** | Починка Tool Use: system prompt, L0-контекст, read-tools, regex отключены | ✅ Выполнено |
-| **Фаза 13** | Guided Workout Flow, UX-навигация, notification fix, in-chat debug | ✅ Закрыта |
-| **Фаза 14** | Infrastructure & Bug Fixes: silent exceptions, input validation, upsert, cleanup | ✅ Закрыта |
-| **Фаза 15** | Plan sync, progressive overload hints, /today dashboard, quick meal presets | ✅ Закрыта |
-| **Фаза 16** | Smoke tests, chart buttons в /stats, weekly digest в чат, streak protection | ✅ Закрыта |
-| **Сессия 2026-03-17** | CI/CD, bug fixes, prompts rewrite, cost optimization, nutrition A/B/C, SSH fix | ✅ Закрыта |
-
-→ Детали: memory/projects/
+Telegram-бот-тренер «Алекс». Этот файл — справочник для написания кода, не документация продукта.
 
 ## Stack
 - Python 3.11 + python-telegram-bot 20.7
-- Anthropic API (Claude Sonnet 4) — MODEL: claude-sonnet-4-20250514
-- MODEL_SCHEDULED: claude-haiku-4-5-20251001 (scheduled jobs, 4x дешевле)
+- Anthropic API — MODEL: `claude-sonnet-4-20250514`, MODEL_CRUD/SCHEDULED: `claude-haiku-4-5-20251001`
+- MAX_TOKENS=3000, MAX_TOKENS_CRUD=1200, MAX_TOKENS_SCHEDULED=1500
 - SQLite WAL (`data/trainer.db`) — 26 таблиц, 4-layer memory
-- APScheduler (AsyncIOScheduler) — запускается в post_init
-- Docker (multi-stage, non-root botuser uid=1001, 256MB limit)
-- Google Cloud VM (SSH, Linux) — продакшн, путь /opt/trainer-bot
-- GitHub: github.com/Vladosik02/TelegramFlaka
+- APScheduler (AsyncIOScheduler) — запускается в `post_init`
+- Docker (multi-stage, botuser uid=1001), GCP VM (`/opt/trainer-bot`)
 - GitHub Actions CI/CD (Syntax → Tests → Deploy via SSH)
 
 ## Architecture — Ключевые файлы
+
 | Файл | Назначение |
 |------|------------|
-| `main.py` | Точка входа. `post_init` запускает scheduler + set_my_commands + set_chat_menu_button |
-| `config.py` | MODEL, MODEL_SCHEDULED, MAX_TOKENS=3000, MAX_TOKENS_SCHEDULED=1500, пути, расписание |
-| `ai/client.py` | `generate_agent_response()` — агентный цикл (5 iter). `_cached_system()` — prompt caching. Scheduled jobs используют MODEL_SCHEDULED + MAX_TOKENS_SCHEDULED |
-| `ai/tools.py` | 13 tools: 8 write + 5 read. `ALL_TOOLS` экспорт |
-| `ai/tool_executor.py` | `execute_tool()` — dispatch, валидация, logging, notify при success=False |
-| `ai/context_builder.py` | 4-слойный контекст (L0-L4), теги, action hints. История: limit=5 |
-| `ai/prompts/system_max.txt` | Переписан: ХАРАКТЕР (прямой/с юмором), ФОРМАТ (2-3 предл, без markdown), НАУКА (гипертрофия, белок), АВТОЗАПИСЬ, анти-галлюцинация |
-| `ai/prompts/system_light.txt` | Переписан: тот же каркас, тёплый тон |
-| `bot/handlers.py` | `handle_message()`, `handle_callback()`. menu:home — fallback reply_text для фото-сообщений |
-| `bot/commands.py` | cmd_start, cmd_menu, cmd_stats, cmd_profile, cmd_plan, cmd_today и др. |
-| `bot/keyboards.py` | Все inline keyboards |
-| `bot/debug.py` | notify_error, notify_tool_result, notify_api_error, notify_no_tools_called |
-| `scheduler/jobs.py` | Регистрация всех APScheduler задач |
-| `db/queries/workouts.py` | `log_workout()` — upsert (SELECT-first, нет дублей) |
-| `db/queries/nutrition.py` | `log_nutrition_day()` — upsert |
-| `Dockerfile` | Multi-stage. pip install БЕЗ --user → глобальные пакеты. botuser uid=1001 |
-| `.github/workflows/deploy.yml` | Syntax → Tests (dummy env vars) → SSH deploy → Telegram notify |
+| `main.py` | Точка входа. `post_init` → scheduler. Startup tool validation (tools.py vs executor) |
+| `config.py` | MODEL, токены, пути, расписание, QUICK_MEAL_PRESETS |
+| `ai/client.py` | `generate_agent_response()` — agent loop (5 iter). `_cached_system()` — prompt caching |
+| `ai/tools.py` | 15 tools (9 write + 6 read). `ALL_TOOLS`, `get_tools_for_tags()` |
+| `ai/tool_executor.py` | `execute_tool()` — dispatch dict, валидация, logging |
+| `ai/context_builder.py` | 4-слойный контекст (L0-L4), теги, CRUD/FULL tier dispatch |
+| `ai/prompts/system_max.txt` | System prompt MAX-режим |
+| `ai/prompts/system_light.txt` | System prompt LIGHT-режим |
+| `bot/handlers.py` | `handle_message()`, `handle_callback()` — ~1600 строк, монолит |
+| `bot/commands.py` | Все cmd_* функции (18 команд) |
+| `bot/keyboards.py` | Все InlineKeyboardMarkup функции |
+| `bot/debug.py` | `notify_error()`, `notify_tool_result()` — in-chat debug |
+| `scheduler/jobs.py` | Регистрация 17 APScheduler задач |
+| `scheduler/logic.py` | Чек-ины, weekly/daily/monthly reports |
+| `scheduler/prediction.py` | Прогноз весов/повторов на тренировку |
+| `scheduler/adaptation.py` | DELOAD/LIGHT/BOOST/NORMAL модификатор |
+| `db/connection.py` | `get_connection()` singleton, `init_db()`, migrations |
+| `db/queries/workouts.py` | `log_workout()` — upsert pattern |
+| `tests/conftest.py` | `patched_db` fixture, in-memory SQLite |
 
-## Tool Use — 13 инструментов
-**WRITE (8):** save_workout, save_metrics, save_nutrition, save_exercise_result, set_personal_record, update_athlete_card, save_episode, award_xp
-**READ (5):** get_weekly_stats, get_nutrition_history, get_personal_records, get_current_plan, get_user_profile
+## Tools — 15 инструментов
 
-## Cost Optimization
-| Что | Эффект |
-|-----|--------|
-| Prompt caching (`_cached_system()`) | ~40% экономии на input токенах |
-| Haiku для scheduled jobs | ~30% экономии (4x дешевле Sonnet) |
-| История переписки limit=5 (было 10) | Меньше токенов на контекст |
-| Итого | ~2-2.5x дешевле vs baseline |
+**WRITE (9):** save_workout, save_metrics, save_nutrition, save_exercise_result, set_personal_record, update_athlete_card, save_episode, award_xp, save_training_plan
 
-## CI/CD — GitHub Actions
-```
-push → Syntax Check → Run Tests (201 тест) → Deploy to VPS
-```
-- Secrets: SERVER_HOST, SERVER_USER (mrvald19), SSH_PRIVATE_KEY, SERVER_PORT (22)
-- Deploy: git pull → backup DB → docker compose build --no-cache → down → up -d
-- После деплоя: Telegram уведомление из .env на сервере
-- Pytest использует dummy env vars (TELEGRAM_TOKEN=test_token_ci)
+**READ (6):** get_weekly_stats, get_nutrition_history, get_personal_records, get_current_plan, get_user_profile, get_workout_prediction
 
-## Docker — важные детали
-- `botuser` uid=1001, нет домашней папки
-- Пакеты в `/usr/local/lib/python3.11/site-packages` (НЕ --user)
-- Volumes: `./data:/app/data`, `./backups:/app/backups`
-- Права на data/: `sudo chown -R 1001:1001 /opt/trainer-bot/data`
-- Права на backups/: `sudo chown -R 1001:1001 /opt/trainer-bot/backups`
+## Tiered Context
 
-## Scheduler — запуск
-AsyncIOScheduler запускается в `post_init(application)` — после старта event loop.
-`app.bot_data["scheduler"]` — доступ из handlers (snooze).
-`scheduler.shutdown()` — в finally блоке main().
+| Tier | Когда | Модель | История | Tools |
+|------|-------|--------|---------|-------|
+| **CRUD** | Теги food/training/metrics — запись | Haiku | 3 msg | 2-5 filtered |
+| **FULL** | Теги analytics/plan/chat — диалог | Sonnet | 10 msg | ALL_TOOLS (15) |
 
-## Scheduler — расписание
-| Job ID | Время | Функция |
-|--------|-------|---------|
-| morning_checkin | config (MAX_MORNING=09:00) | `send_morning_checkin()` + Haiku Tool Use |
-| afternoon_checkin | config (MAX_AFTERNOON=12:30) | `send_afternoon_checkin()` + Haiku Tool Use |
-| evening_checkin | config (MAX_EVENING=20:00) | `send_evening_checkin()` + Haiku Tool Use |
-| pre_workout_morning | 08:30 | `broadcast_pre_workout_morning()` |
-| pre_workout_evening | 19:30 | `broadcast_pre_workout_evening()` |
-| reminder_checker | каждые 15 мин | `check_and_send_reminders()` |
-| nudge_checker | 08:00 | `check_and_send_nudges()` |
-| daily_summary | 23:00 | AI-сводка дня |
-| weekly_report | вс 21:00 | `send_weekly_report()` |
-| mesocycle_advance | вс 21:15 | `advance_all_mesocycles()` |
-| l4_intelligence | вс 21:30 | L4 дайджест |
-| plan_archive | вс 19:00 | Архивация плана |
-| plan_generate | вс 20:00 | Генерация плана AI |
-| monthly_summary | 1-е число 09:00 | AI-резюме месяца |
-| checkins_cleanup | вс 22:00 | `cleanup_old_checkins()` |
-| streak_protection | 20:00 ежедн | `broadcast_streak_protection()` |
-| nutrition_analysis | 21:45 ежедн | `run_nutrition_analysis()` — паттерны питания |
+Scheduled jobs всегда: Haiku + MAX_TOKENS_SCHEDULED=1500.
 
-## Multi-user
-Все 26 таблиц БД изолированы по `user_id` (Telegram ID). Новый пользователь → /start → онбординг. QUICK_MEAL_PRESETS — глобальные (одинаковые для всех, можно сделать персональными).
+## 4-слойная память (L0-L4)
 
-## Terms
-| Term | Meaning |
-|------|---------|
-| MAX / LIGHT | Два режима: MAX — нечётные дни, LIGHT — чётные |
-| Алекс | Имя AI-персонажа бота |
-| L0–L4 | Слои памяти: L0=карточка, L1=здоровье, L2=питание, L3=тренировки, L4=AI-аналитика |
-| agent loop | user msg → Claude → tool_use → execute → Claude → final (max 5 iter) |
-| guided_workout_flow | 4-шаговый flow: wf:dur → wf:rpe → wf:feel → wf:comment |
-| action hints | `⚡ ДЕЙСТВИЯ ДЛЯ ЭТОГО СООБЩЕНИЯ` — конкретные tool-инструкции по тегам |
-| prompt caching | `_cached_system()` в client.py — system prompt за 10% цены |
-| upsert | SELECT-first pattern: log_workout, log_metrics, log_nutrition_day |
-| hallucination detector | Детектирует «записал» в тексте без реального tool_use вызова |
-| AUTORECORD | Бот автоматически записывает ответы на свои вопросы (energy/sleep) |
+| Слой | Таблица | Всегда? | Содержимое |
+|------|---------|---------|------------|
+| **L0** | `memory_athlete` | да | Имя, цель, возраст, рост, вес, season, стрик |
+| **L1** | `memory_athlete` | health | Травмы, непереносимости, добавки |
+| **L2** | `memory_nutrition` | food | КБЖУ-цель, ограничения |
+| **L3** | `memory_training` | training | Предпочтения, equipment, exercise_scores |
+| **L4** | `memory_intelligence` | да | weekly_digest, observations (max 10), trend_summary |
 
-## Key Notion Pages
-| Page | URL |
-|------|-----|
-| ROADMAP | https://www.notion.so/31c8fb7a86e3812a8e20d04186ebebe9 |
+`exercise_scores`: `score = 0.4×overload + 0.3×consistency + 0.3×alignment` per exercise.
 
-## CI/CD — Известные грабли (выучено болью)
+---
 
-### SSH-ключ на GCP VM
-**Проблема:** `google-guest-agent` периодически перезаписывает `~/.ssh/authorized_keys` из instance metadata. Ключ, добавленный напрямую в файл, пропадает после синхронизации.
-**Постоянное решение:** ключ должен быть в **instance metadata** (не project metadata):
-- GCP Console → Compute Engine → VM → Edit → SSH Keys → Add item
-- ИЛИ: `gcloud compute instances add-metadata INSTANCE --metadata ssh-keys="mrvald19:KEY" --zone ZONE`
-- `gcloud compute project-info add-metadata` — требует `roles/owner`, у нас нет. Не использовать.
-- `gcloud auth login --enable-gdrive-access` — если gcloud ругается на scopes
-**Текущий ключ в GitHub Secrets:** `deploy_key` (ed25519, создан 2026-03-17, комментарий `github-actions-deploy`)
-**Публичный ключ:** `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILiwi9FQ26lou4YSF82VCzzDrfiittp+isV84N1gtSUj`
+## Code Patterns
 
-### deploy.yml — правильные параметры appleboy/ssh-action@v1.0.3
-- ✅ `timeout:` — таймаут соединения (НЕ `connect_timeout:` — его нет в v1.0.3)
-- ✅ `command_timeout:` — таймаут выполнения скрипта
-- ✅ `git fetch origin && git reset --hard origin/main` — вместо `git pull` (не падает на divergent branches)
-- ✅ `docker compose down || true` — не падает если контейнер уже остановлен
-- ✅ `docker compose logs --tail=20 || true` — не убивает деплой в конце
-- ✅ `continue-on-error: true` на notify-шагах — SSH-хик при уведомлении не ломает статус деплоя
+### 1. Command Handler
 
-### Права на backups/
-`backups/` принадлежит `botuser` (uid=1001, Docker). Деплой-скрипт запускается от `mrvald19`.
-Постоянный фикс: `sudo chown -R mrvald19:mrvald19 /opt/trainer-bot/backups` на сервере.
-В deploy.yml: `sudo chown -R "$(id -u):$(id -g)" backups/ 2>/dev/null || true` перед cp.
-
-### pytest без env vars
-`config.py` падает при импорте если `TELEGRAM_TOKEN`/`ANTHROPIC_API_KEY` не заданы.
-Фикс в `tests/conftest.py` — первые строки файла (до любых imports):
 ```python
-import os
-if not os.environ.get("TELEGRAM_TOKEN"): os.environ["TELEGRAM_TOKEN"] = "test_token_ci"
-if not os.environ.get("ANTHROPIC_API_KEY"): os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+# bot/commands.py
+async def cmd_example(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    tg = update.effective_user
+    user = get_user(tg.id)
+    if not user or not user["active"]:
+        return
+    streak = get_streak(user["id"])
+    text = f"Привет, *{user.get('name')}*! Стрик: {streak}"
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb_main_menu())
 ```
-Используем `if not get()` а не `setdefault` — потому что переменная может быть в env как пустая строка.
 
-## Current Issues
-Нет открытых известных багов. Бот работает на продакшне (2026-03-17).
+### 2. Tool Definition
 
-## UX
-- Кнопка меню в чате: MenuButtonCommands() + 10 команд через set_my_commands()
-- Запись тренировки: guided flow (4 шага, кнопки)
-- Ошибки: in-chat через bot/debug.py
-- Деплой: Telegram уведомление автоматически
+```python
+# ai/tools.py
+TOOL_EXAMPLE = {
+    "name": "example_tool",
+    "description": "Что делает. Когда вызывать.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "field_name": {
+                "type": "string",
+                "description": "Описание поля"
+            },
+            "optional_field": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "Описание (optional)"
+            },
+        },
+        "required": ["field_name"],
+        "additionalProperties": False
+    }
+}
+# Добавить в ALL_TOOLS list и в _TOOLS_BY_TAG если CRUD
+```
+
+### 3. Tool Executor
+
+```python
+# ai/tool_executor.py
+async def _tool_example(tg_id: int, inp: dict, **kwargs) -> dict:
+    user = get_user(tg_id)
+    if not user:
+        return {"error": "User not found", "success": False}
+    today = datetime.date.today().isoformat()
+    result_id = some_db_function(user["id"], today, inp.get("field_name"))
+    return {"success": True, "message": "Saved", "id": result_id}
+
+# Добавить в _DISPATCH dict внутри _init_dispatch():
+#   "example_tool": _tool_example,
+```
+
+### 4. DB Query (upsert pattern)
+
+```python
+# db/queries/example.py
+def upsert_example(user_id: int, date: str, value: str = None) -> int:
+    conn = get_connection()
+    existing = conn.execute(
+        "SELECT id FROM table_name WHERE user_id = ? AND date = ?",
+        (user_id, date)
+    ).fetchone()
+    if existing:
+        if value is not None:
+            conn.execute("UPDATE table_name SET value = ? WHERE id = ?", (value, existing["id"]))
+        conn.commit()
+        return existing["id"]
+    else:
+        cur = conn.execute(
+            "INSERT INTO table_name (user_id, date, value) VALUES (?, ?, ?)",
+            (user_id, date, value)
+        )
+        conn.commit()
+        return cur.lastrowid
+```
+
+### 5. Keyboard
+
+```python
+# bot/keyboards.py
+def kb_example() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Action A", callback_data="prefix:action_a"),
+            InlineKeyboardButton("Action B", callback_data="prefix:action_b"),
+        ],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:home")],
+    ])
+```
+
+### 6. Callback Routing
+
+```python
+# bot/handlers.py :: handle_callback()
+if data.startswith("prefix:"):
+    action = data.split(":")[1]
+    if action == "action_a":
+        # ...
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_next())
+    elif action == "action_b":
+        # ...
+    return
+```
+
+Существующие prefixes: `menu:`, `chart:`, `wf:`, `reset:`, `stop:`, `adapt:`, `meal:`, `ci:`, `energy_`, `adm:`
+
+### 7. Scheduler Job
+
+```python
+# scheduler/jobs.py
+scheduler.add_job(
+    broadcast_function, "cron",
+    hour=9, minute=0,
+    args=[bot],
+    id="job_name",
+    replace_existing=True,
+)
+```
+
+---
+
+## Checklists
+
+### Новый tool (3 файла)
+1. `ai/tools.py` — определение `TOOL_X` + добавить в `ALL_TOOLS` + в `_TOOLS_BY_TAG` если CRUD
+2. `ai/tool_executor.py` — handler `_tool_x()` + добавить в `_DISPATCH` внутри `_init_dispatch()`
+3. `ai/prompts/system_max.txt` + `system_light.txt` — описать tool для AI
+
+Startup validation в `main.py:74-95` автоматически поймает рассинхрон tools↔executor.
+
+### Новая команда (3 файла)
+1. `bot/commands.py` — добавить `cmd_x()`
+2. `main.py:101-118` — `app.add_handler(CommandHandler("x", cmd_x))` + import
+3. `main.py` — добавить в `set_my_commands()` если нужна в меню
+
+### Новая scheduled job (3 файла)
+1. `scheduler/logic.py` (или отдельный модуль `scheduler/`) — async function
+2. `scheduler/jobs.py` — `scheduler.add_job()`
+3. `config.py` — time constant если нужно (pattern: `SCHEDULE_X_TIME = "HH:MM"`)
+
+---
+
+## Code Conventions
+
+**Imports** — абсолютные, сгруппированные:
+```python
+import logging
+import datetime
+from telegram import Update
+from telegram.ext import ContextTypes
+from db.queries.user import get_user
+from config import MODEL, MAX_TOKENS
+
+logger = logging.getLogger(__name__)
+```
+
+**Logging** — `[PREFIX]` в скобках: `[TOOL]`, `[CHECKIN]`, `[AGENT]`, `[FOOD_PARSE]`
+```python
+logger.info(f"[CHECKIN] Morning sent to {telegram_id}")
+logger.error(f"[TOOL] Error in '{tool_name}' for {tg_id}: {e}")
+```
+
+**Tool errors** — всегда dict:
+```python
+return {"error": "описание", "success": False}
+return {"success": True, "message": "что сделано", "id": result_id}
+```
+
+**DB** — singleton `get_connection()`, WAL mode, `conn.execute()` + `conn.commit()`, `conn.row_factory = sqlite3.Row`
+
+**Tests** — `patched_db` fixture патчит `get_connection` во всех модулях (список `_targets` в `conftest.py`). При добавлении нового DB-модуля — добавить его путь в `_targets`.
+
+**Docker** — botuser uid=1001, пакеты глобальные (не --user), UTF-8 env.
+
+---
+
+## Известные ловушки
+
+- **Двойное XP:** `tool_executor.py` автоматически начисляет 100 XP при `save_workout`. Если Claude вызовет ещё и `award_xp` — дублирование
+- **handlers.py = 1600 строк:** монолит. Ищи функции по имени, не читай целиком
+- **response_parser.py:** может быть dead code после Agent Tool Use. Не удаляй без проверки
+- **SQLite concurrency:** scheduler + telegram handlers пишут одновременно → возможен `database is locked`
+- **Стрик около полуночи:** `get_streak()` может давать неверный результат на границе дней
+
+## Известные ограничения
+
+- Personal insights не накапливаются — вычисляются заново каждую неделю, бот не помнит что уже сообщал
+- L4 observations — max 10, старые вытесняются, долгосрочные наблюдения теряются
+- Teach moments не хранятся — возможны повторы через несколько недель
+- Нет состава тела (только weight_kg) — нельзя разделить массу на мышцы/жир
+- Питание — дневной агрегат, нет тайминга приёмов пищи
+- Онбординговые данные статичны — фитнес-тест не перезапускается автоматически
+- Нет интеграций с wearables — recovery = subjective self-report
+
+## Roadmap
+
+**Быстрые победы:**
+- Хранить показанные personal insights в БД → бот знает «я уже сообщал об этом паттерне»
+- Anti-repeat для teach_moments → хранить хеши показанных фактов
+
+**Средние:**
+- Расширить L4 observations > 10 (archive + buffer)
+- Автозапрос при стухших метриках (2+ дня без записи → подсказка в чек-ине)
+- Детализация питания (meal-level: таблица `meal_entries`, tool `save_meal`)
+
+**Большие:**
+- Замеры тела (таблица `body_measurements`, tool `save_measurements`)
+- Повторный фитнес-тест (`/retest` + auto-предложение раз в 2-3 месяца)
+- Накопление personal insights в L3 как достоверные факты о пользователе
+
+## CI/CD
+
+```
+push → Syntax (20 файлов) → Tests (312) → SSH Deploy → Telegram notify
+Deploy: git fetch && git reset --hard origin/main → backup DB → docker compose build --no-cache → down || true → up -d
+SSH-ключ: хранить в instance metadata GCP (не project metadata) — google-guest-agent перезаписывает authorized_keys
+```

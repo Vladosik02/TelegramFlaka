@@ -45,6 +45,7 @@ HELP_TEXT = """
 /history — хроника за последние N дней
 /test — фитнес-тест (отжимания, приседания, планка)
 /plan — план тренировок на эту неделю
+/workout — тренировка на сегодня (с учётом оборудования и истории)
 /achievements — уровень, XP и ачивки ⚡
 /mode — текущий режим (MAX/LIGHT)
 /setup — изменить расписание и предпочтения
@@ -222,26 +223,24 @@ async def _apply_stop(update, ctx, tg, days: int) -> None:
 
 # ─── /stats ──────────────────────────────────────────────────────────────────
 
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    tg = update.effective_user
-    user = get_user(tg.id)
-    if not user:
-        await update.message.reply_text("Нет данных. Напиши /start")
-        return
+def _build_stats_text(user: dict) -> str:
+    """Собирает текст статистики для /stats и callback action='stats'.
 
+    Вынесено в отдельную функцию чтобы не дублировать логику между
+    cmd_stats (bot/commands.py) и handle_callback action='stats' (bot/handlers.py).
+    """
     weekly = get_weekly_stats(user["id"])
     alltime = get_all_time_stats(user["id"])
     streak = get_streak(user["id"])
     mode = get_trainer_mode()
     mode_emoji = "🔥" if mode == "MAX" else "🌿"
 
-    # Прогресс-бар тренировок недели
     done = weekly['workouts_done']
     total = max(weekly['workouts_total'], 1)
     filled = min(10, round(done / total * 10))
     bar = "█" * filled + "░" * (10 - filled)
 
-    text = (
+    return (
         f"📊 *Статистика {user['name'] or 'атлета'}*\n"
         "━━━━━━━━━━━━━━━━━\n"
         "*Эта неделя:*\n"
@@ -258,6 +257,15 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "━━━━━━━━━━━━━━━━━\n"
         f"{mode_emoji} Режим сегодня: *{mode}*"
     )
+
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    tg = update.effective_user
+    user = get_user(tg.id)
+    if not user:
+        await update.message.reply_text("Нет данных. Напиши /start")
+        return
+    text = _build_stats_text(user)
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb_stats_quick())
 
 
@@ -988,3 +996,39 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown",
         reply_markup=kb_today_quick(),
     )
+
+
+# ─── /workout — тренировка на сегодня ─────────────────────────────────────────
+
+async def cmd_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Генерирует тренировку на сегодня с учётом оборудования, уровня и истории."""
+    import os
+    from ai.context_builder import build_layered_context
+    from ai.client import generate_agent_response
+    from db.writer import save_user_message, save_ai_response
+    from config import PROMPTS_DIR
+
+    tg = update.effective_user
+    user = get_user(tg.id)
+    if not user or not user["active"]:
+        return
+
+    user_msg = "Составь мне тренировку на сегодня"
+    save_user_message(tg.id, user_msg)
+
+    context = build_layered_context(tg.id, user_msg)
+
+    workout_prompt_path = os.path.join(PROMPTS_DIR, "workout_planning.txt")
+    with open(workout_prompt_path, "r", encoding="utf-8") as f:
+        context["system"] = context["system"] + "\n\n" + f.read()
+
+    bot = update.message.get_bot()
+    response = await generate_agent_response(
+        bot=bot,
+        chat_id=update.message.chat_id,
+        context=context,
+        user_message=user_msg,
+        tg_id=tg.id,
+    )
+    if response:
+        save_ai_response(tg.id, response)

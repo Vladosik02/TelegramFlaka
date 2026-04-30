@@ -309,13 +309,15 @@ _TRIGGER_LABELS = {
     "nudges":             "🔔 Нудж-проверка",
     "monthly":            "📅 Месячный отчёт",
     "nutrition_analysis": "🥗 Анализ питания",
+    "plan_archive":       "📦 Архив плана",
+    "plan_generate":      "🗓 Генерация плана",
 }
 
 
 async def _run_trigger(query, ctx: ContextTypes.DEFAULT_TYPE, task: str) -> None:
     """Запускает задачу вручную и отвечает результатом."""
     label = _TRIGGER_LABELS.get(task, task)
-    bot = query.message.bot
+    bot = ctx.bot
 
     await query.answer(f"Запускаю: {label}…")
 
@@ -347,6 +349,14 @@ async def _run_trigger(query, ctx: ContextTypes.DEFAULT_TYPE, task: str) -> None
         elif task == "nutrition_analysis":
             from scheduler.nutrition_analysis import run_nutrition_analysis
             await run_nutrition_analysis(bot)
+
+        elif task == "plan_archive":
+            from scheduler.logic import broadcast_plan_archive
+            await broadcast_plan_archive(bot)
+
+        elif task == "plan_generate":
+            from scheduler.logic import broadcast_plan_generate
+            await broadcast_plan_generate(bot)
 
         else:
             await query.edit_message_text(

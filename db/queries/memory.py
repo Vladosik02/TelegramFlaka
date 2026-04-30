@@ -236,7 +236,7 @@ def update_exercise_score(user_id: int, exercise: str, score: float,
 
 
 def get_l3_brief(user_id: int) -> dict:
-    """L3 brief: preferred_days, preferred_time, avg_session_min, current_program."""
+    """L3 brief: preferred_days, preferred_time, avg_session_min, current_program, equipment."""
     row = get_training_intel(user_id)
     if not row:
         return {}
@@ -245,11 +245,12 @@ def get_l3_brief(user_id: int) -> dict:
         "preferred_time":  row.get("preferred_time", "flexible"),
         "avg_session_min": row.get("avg_session_min", 45),
         "current_program": row.get("current_program"),
+        "equipment":       _json_get(row, "equipment", []),
     }
 
 
 def get_l3_deep(user_id: int) -> dict:
-    """L3 deep: + SCORE-таблица упражнений, avoided_exercises, notes."""
+    """L3 deep: + SCORE-таблица упражнений, avoided_exercises, notes, equipment."""
     row = get_training_intel(user_id)
     if not row:
         return {}
@@ -267,6 +268,7 @@ def get_l3_deep(user_id: int) -> dict:
         "notable_exercises": notable,   # только notable, экономим токены
         "avoided_exercises": _json_get(row, "avoided_exercises", []),
         "training_notes":   row.get("training_notes"),
+        "equipment":        _json_get(row, "equipment", []),
     }
 
 
@@ -324,18 +326,30 @@ def get_l4_intelligence(user_id: int) -> dict:
         "seasonal_context": row.get("seasonal_context"),
         "motivation_level": row.get("motivation_level", "normal"),
         "trend_summary":    row.get("trend_summary"),
+        "bio_insights":     row.get("bio_insights"),
         "generated_at":     row.get("generated_at"),
     }
 
 
+
+
 def append_observation(user_id: int, observation: str,
-                        max_observations: int = 10) -> None:
-    """Добавляет AI-наблюдение в список, сохраняя последние N штук."""
+                        max_observations: int = 10,
+                        replace_prefix: str = None) -> None:
+    """Добавляет AI-наблюдение в список, сохраняя последние N штук.
+
+    replace_prefix: если передан, удаляет все существующие наблюдения,
+    начинающиеся с этого префикса, перед добавлением нового.
+    Используется для accuracy-observations — обновляем «занижены на X кг»
+    вместо накопления вариаций с разными числами.
+    """
     row = get_intelligence(user_id)
     if row:
         obs = _json_get(row, "ai_observations", [])
     else:
         obs = []
+    if replace_prefix:
+        obs = [o for o in obs if not o.startswith(replace_prefix)]
     if observation not in obs:
         obs.append(observation)
     obs = obs[-max_observations:]  # сохраняем только последние N
