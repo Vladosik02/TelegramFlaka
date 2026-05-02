@@ -44,24 +44,9 @@ def _create_in_memory_db() -> sqlite3.Connection:
         schema_sql = f.read()
     conn.executescript(schema_sql)
 
-    # Миграции (копия из db/connection.py)
-    migrations = [
-        "ALTER TABLE memory_training ADD COLUMN preferred_time TEXT DEFAULT 'flexible'",
-        "ALTER TABLE user_profile ADD COLUMN training_location TEXT DEFAULT 'flexible'",
-        "ALTER TABLE memory_athlete ADD COLUMN baseline_pushups INTEGER",
-        "ALTER TABLE memory_athlete ADD COLUMN baseline_squats INTEGER",
-        "ALTER TABLE memory_athlete ADD COLUMN baseline_plank_sec INTEGER",
-        "ALTER TABLE workouts ADD COLUMN plan_id TEXT REFERENCES training_plan(plan_id)",
-        # v1.7 — доступное оборудование (JSON-список) в тренировочной карточке
-        "ALTER TABLE memory_training ADD COLUMN equipment TEXT DEFAULT '[]'",
-        # v1.8 — AI-анализ биоданных
-        "ALTER TABLE memory_intelligence ADD COLUMN bio_insights TEXT",
-        # v1.9 — координаты и город для погодного контекста (scheduler/weather.py)
-        "ALTER TABLE memory_athlete ADD COLUMN weather_lat REAL",
-        "ALTER TABLE memory_athlete ADD COLUMN weather_lon REAL",
-        "ALTER TABLE memory_athlete ADD COLUMN weather_city TEXT",
-    ]
-    for sql in migrations:
+    # Миграции — единый источник правды в db/migrations.py
+    from db.migrations import MIGRATIONS
+    for sql in MIGRATIONS:
         try:
             conn.execute(sql)
             conn.commit()

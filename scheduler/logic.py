@@ -1779,8 +1779,8 @@ async def broadcast_streak_protection(bot: Bot) -> None:
                 continue
 
             # Проверяем: есть ли завершённая тренировка сегодня
-            from db.connection import get_connection as _gc
-            conn = _gc()
+            from db.connection import get_connection
+            conn = get_connection()
             done_today = conn.execute(
                 "SELECT COUNT(*) as cnt FROM workouts WHERE user_id = ? AND date = ? AND completed = 1",
                 (uid, today),
