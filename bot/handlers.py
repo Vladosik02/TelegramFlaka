@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 
 import datetime
 from db.queries.user import get_user, create_user, update_user
+from db.queries.workouts import get_streak
 from db.queries.memory import upsert_athlete_card, upsert_training_intel
 from db.queries.fitness_metrics import (
     save_fitness_test, get_last_fitness_test,
@@ -757,7 +758,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 send_snooze_reminder,
                 "date",
                 run_date=run_time,
-                args=[query.message.bot, tg.id],
+                args=[ctx.bot, tg.id],
                 id=f"snooze_{tg.id}",
                 replace_existing=True,
             )
@@ -979,11 +980,11 @@ async def _handle_checkin_callback(query, ctx, tg, data: str) -> None:
         # Если ночной чек-ин — отправляем итог дня
         if slot == "night":
             from scheduler.logic import send_night_summary
-            await send_night_summary(query.message.bot, tg.id, user["id"])
+            await send_night_summary(ctx.bot, tg.id, user["id"])
         # Если дневной — напоминаем о тренировке
         elif slot == "afternoon":
             from scheduler.logic import send_afternoon_workout_reminder
-            await send_afternoon_workout_reminder(query.message.bot, tg.id, user["id"])
+            await send_afternoon_workout_reminder(ctx.bot, tg.id, user["id"])
         return
 
 
@@ -1027,10 +1028,10 @@ async def _handle_checkin_food_text(update, ctx, tg, text: str) -> None:
     # Действия после записи еды
     if slot == "night":
         from scheduler.logic import send_night_summary
-        await send_night_summary(update.message.bot, tg.id, user["id"])
+        await send_night_summary(ctx.bot, tg.id, user["id"])
     elif slot == "afternoon":
         from scheduler.logic import send_afternoon_workout_reminder
-        await send_afternoon_workout_reminder(update.message.bot, tg.id, user["id"])
+        await send_afternoon_workout_reminder(ctx.bot, tg.id, user["id"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
