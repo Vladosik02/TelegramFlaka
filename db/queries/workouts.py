@@ -3,9 +3,17 @@ db/queries/workouts.py — Тренировки и метрики.
 """
 import logging
 import datetime
+import threading
 from db.connection import get_connection
 
 logger = logging.getLogger(__name__)
+
+# Сериализация SELECT-then-INSERT/UPDATE между потоками. У нас singleton
+# sqlite3-соединение с check_same_thread=False — Python-уровневая гонка
+# возможна (handler в asyncio + APScheduler через to_thread). UNIQUE-
+# индекс не подходит: workouts.id есть FK-источник для exercise_results,
+# дедупликация существующих дубликатов под FK-каскадом — не one-shot SQL.
+_upsert_lock = threading.Lock()
 
 
 def log_workout(user_id: int, date: str, mode: str, workout_type: str = None,
@@ -16,36 +24,37 @@ def log_workout(user_id: int, date: str, mode: str, workout_type: str = None,
     Если запись за дату с тем же типом уже есть — обновляет переданные поля,
     не создавая дубликат. Защита от двойной записи: guided flow + агент.
     """
-    conn = get_connection()
-    existing = conn.execute(
-        "SELECT id FROM workouts WHERE user_id = ? AND date = ? AND type IS ?",
-        (user_id, date, workout_type)
-    ).fetchone()
+    with _upsert_lock:
+        conn = get_connection()
+        existing = conn.execute(
+            "SELECT id FROM workouts WHERE user_id = ? AND date = ? AND type IS ?",
+            (user_id, date, workout_type)
+        ).fetchone()
 
-    if existing:
-        updates: dict = {"completed": int(completed), "mode": mode}
-        if duration_min is not None: updates["duration_min"] = duration_min
-        if intensity    is not None: updates["intensity"]    = intensity
-        if exercises    is not None: updates["exercises"]    = exercises
-        if notes        is not None: updates["notes"]        = notes
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        conn.execute(
-            f"UPDATE workouts SET {set_clause} WHERE user_id = ? AND date = ? AND type IS ?",
-            list(updates.values()) + [user_id, date, workout_type]
-        )
-        conn.commit()
-        logger.info(f"[WORKOUT] Updated existing record user_id={user_id} date={date} type={workout_type}")
-        return existing["id"]
-    else:
-        cur = conn.execute(
-            """INSERT INTO workouts
-               (user_id, date, mode, type, duration_min, intensity, exercises, notes, completed)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (user_id, date, mode, workout_type, duration_min, intensity, exercises, notes, int(completed))
-        )
-        conn.commit()
-        logger.info(f"[WORKOUT] Inserted new record user_id={user_id} date={date} type={workout_type}")
-        return cur.lastrowid
+        if existing:
+            updates: dict = {"completed": int(completed), "mode": mode}
+            if duration_min is not None: updates["duration_min"] = duration_min
+            if intensity    is not None: updates["intensity"]    = intensity
+            if exercises    is not None: updates["exercises"]    = exercises
+            if notes        is not None: updates["notes"]        = notes
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            conn.execute(
+                f"UPDATE workouts SET {set_clause} WHERE user_id = ? AND date = ? AND type IS ?",
+                list(updates.values()) + [user_id, date, workout_type]
+            )
+            conn.commit()
+            logger.info(f"[WORKOUT] Updated existing record user_id={user_id} date={date} type={workout_type}")
+            return existing["id"]
+        else:
+            cur = conn.execute(
+                """INSERT INTO workouts
+                   (user_id, date, mode, type, duration_min, intensity, exercises, notes, completed)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (user_id, date, mode, workout_type, duration_min, intensity, exercises, notes, int(completed))
+            )
+            conn.commit()
+            logger.info(f"[WORKOUT] Inserted new record user_id={user_id} date={date} type={workout_type}")
+            return cur.lastrowid
 
 
 def log_metrics(user_id: int, date: str, weight_kg: float = None,
@@ -57,39 +66,40 @@ def log_metrics(user_id: int, date: str, weight_kg: float = None,
     Если запись за дату уже есть — обновляет только переданные (не-None) поля,
     не затирая существующие данные. Защита от дублей при retry.
     """
-    conn = get_connection()
-    existing = conn.execute(
-        "SELECT id FROM metrics WHERE user_id = ? AND date = ?",
-        (user_id, date)
-    ).fetchone()
+    with _upsert_lock:
+        conn = get_connection()
+        existing = conn.execute(
+            "SELECT id FROM metrics WHERE user_id = ? AND date = ?",
+            (user_id, date)
+        ).fetchone()
 
-    if existing:
-        # Обновляем только поля, которые явно переданы (не None)
-        updates: dict = {}
-        if weight_kg   is not None: updates["weight_kg"]    = weight_kg
-        if sleep_hours is not None: updates["sleep_hours"]  = sleep_hours
-        if energy      is not None: updates["energy"]       = energy
-        if mood        is not None: updates["mood"]         = mood
-        if water_liters is not None: updates["water_liters"] = water_liters
-        if steps       is not None: updates["steps"]        = steps
-        if notes       is not None: updates["notes"]        = notes
-        if updates:
-            set_clause = ", ".join(f"{k} = ?" for k in updates)
-            conn.execute(
-                f"UPDATE metrics SET {set_clause} WHERE user_id = ? AND date = ?",
-                list(updates.values()) + [user_id, date]
+        if existing:
+            # Обновляем только поля, которые явно переданы (не None)
+            updates: dict = {}
+            if weight_kg   is not None: updates["weight_kg"]    = weight_kg
+            if sleep_hours is not None: updates["sleep_hours"]  = sleep_hours
+            if energy      is not None: updates["energy"]       = energy
+            if mood        is not None: updates["mood"]         = mood
+            if water_liters is not None: updates["water_liters"] = water_liters
+            if steps       is not None: updates["steps"]        = steps
+            if notes       is not None: updates["notes"]        = notes
+            if updates:
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE metrics SET {set_clause} WHERE user_id = ? AND date = ?",
+                    list(updates.values()) + [user_id, date]
+                )
+                conn.commit()
+            return existing["id"]
+        else:
+            cur = conn.execute(
+                """INSERT INTO metrics
+                   (user_id, date, weight_kg, sleep_hours, energy, mood, water_liters, steps, notes)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (user_id, date, weight_kg, sleep_hours, energy, mood, water_liters, steps, notes)
             )
             conn.commit()
-        return existing["id"]
-    else:
-        cur = conn.execute(
-            """INSERT INTO metrics
-               (user_id, date, weight_kg, sleep_hours, energy, mood, water_liters, steps, notes)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (user_id, date, weight_kg, sleep_hours, energy, mood, water_liters, steps, notes)
-        )
-        conn.commit()
-        return cur.lastrowid
+            return cur.lastrowid
 
 
 def get_workouts_range(user_id: int, days: int = 7) -> list[dict]:
