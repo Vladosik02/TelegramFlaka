@@ -4,21 +4,27 @@ db/connection.py — Подключение к SQLite. Singleton.
 import sqlite3
 import logging
 import os
+import threading
 from config import DB_PATH, BASE_DIR
 
 logger = logging.getLogger(__name__)
 _conn: sqlite3.Connection | None = None
+_init_lock = threading.Lock()
 
 
 def get_connection() -> sqlite3.Connection:
     global _conn
     if _conn is None:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA foreign_keys=ON")
-        logger.info(f"SQLite connected: {DB_PATH}")
+        with _init_lock:
+            # Повторная проверка под локом — если другой поток уже создал.
+            if _conn is None:
+                os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+                conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA foreign_keys=ON")
+                _conn = conn
+                logger.info(f"SQLite connected: {DB_PATH}")
     return _conn
 
 

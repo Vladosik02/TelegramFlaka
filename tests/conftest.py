@@ -89,16 +89,35 @@ def patched_db(db_conn):
     создавая ЛОКАЛЬНУЮ ссылку. Патч нужно применять именно к этим ссылкам,
     а не только к db.connection.
     """
+    # Список соответствует модулям с `from db.connection import get_connection`
+    # на уровне модуля. Lazy-импорты внутри функций патчить не нужно — они
+    # резолвятся по `db.connection.get_connection` на каждом вызове.
+    # При добавлении нового модуля с module-level импортом — добавить сюда.
     _targets = [
         "db.connection.get_connection",
+        # bot/
+        "bot.handlers.get_connection",
+        # db/queries/
+        "db.queries.context.get_connection",
+        "db.queries.daily_summary.get_connection",
+        "db.queries.episodic.get_connection",
+        "db.queries.exercises.get_connection",
+        "db.queries.fitness_metrics.get_connection",
+        "db.queries.gamification.get_connection",
+        "db.queries.memory.get_connection",
+        "db.queries.monthly_summary.get_connection",
+        "db.queries.nutrition.get_connection",
+        "db.queries.periodization.get_connection",
+        "db.queries.recovery.get_connection",
+        "db.queries.stats.get_connection",
+        "db.queries.training_plan.get_connection",
+        "db.queries.usage.get_connection",
         "db.queries.user.get_connection",
         "db.queries.workouts.get_connection",
-        "db.queries.fitness_metrics.get_connection",
-        "db.queries.training_plan.get_connection",
-        "db.queries.exercises.get_connection",
-        "db.queries.memory.get_connection",
-        "db.queries.nutrition.get_connection",
+        # scheduler/
         "scheduler.nudges.get_connection",
+        "scheduler.periodization.get_connection",
+        "scheduler.personal_insights.get_connection",
         "scheduler.prediction.get_connection",
     ]
     active_patches = []

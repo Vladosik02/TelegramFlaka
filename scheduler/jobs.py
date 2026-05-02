@@ -42,6 +42,14 @@ def _parse_time(t: str) -> tuple[int, int]:
 def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
     """Регистрирует все задачи."""
 
+    # При задержках/паузах event-loop'а пропущенные срабатывания должны
+    # наверстываться (в пределах 5 минут), а несколько слитых пропусков —
+    # объединяться в одно срабатывание (для cron-jobs вроде check-in'ов).
+    scheduler.configure(job_defaults={
+        "misfire_grace_time": 5 * 60,
+        "coalesce": True,
+    })
+
     mh, mm = _parse_time(SCHEDULE_MAX_MORNING)
     ah, am = _parse_time(SCHEDULE_MAX_AFTERNOON)
     eh, em = _parse_time(SCHEDULE_MAX_EVENING)
