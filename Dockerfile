@@ -31,6 +31,12 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+# Локаль времени — должна совпадать с config.BOT_TZ. Без явной TZ
+# контейнер python:3.11-slim работает в UTC, и naive datetime.now()
+# в логах + scheduler-cron уезжают на N часов от локального времени.
+# Реальная TZ для AsyncIOScheduler передаётся через ZoneInfo(BOT_TZ);
+# пакет `tzdata` уже идёт в bot/requirements.txt — system tzdata не нужен.
+ENV TZ=Europe/Warsaw
 
 # Копируем код
 COPY --chown=botuser:botgroup . .

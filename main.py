@@ -4,6 +4,7 @@ main.py — Точка входа. Запуск Telegram-бота + APScheduler.
 """
 import logging
 import asyncio
+from zoneinfo import ZoneInfo
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters
@@ -11,7 +12,7 @@ from telegram.ext import (
 from telegram import Update, BotCommand, MenuButtonCommands, BotCommandScopeDefault, BotCommandScopeChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import TELEGRAM_TOKEN, ADMIN_USER_ID
+from config import TELEGRAM_TOKEN, ADMIN_USER_ID, BOT_TZ
 from db.connection import init_db, close_connection
 from bot.commands import (
     cmd_start, cmd_stop, cmd_stats, cmd_mode, cmd_help, cmd_reset,
@@ -50,16 +51,18 @@ async def post_init(app: Application) -> None:
     Эта функция вызывается библиотекой автоматически, когда цикл событий уже запущен,
     но бот еще не начал получать сообщения. Идеальное место для старта планировщика.
     """
-    scheduler = AsyncIOScheduler()
+    # timezone= здесь обязательна: SCHEDULE_MAX_MORNING="09:00" и др. в config.py
+    # должны интерпретироваться в локальной TZ пользователя, а не в UTC контейнера.
+    scheduler = AsyncIOScheduler(timezone=ZoneInfo(BOT_TZ))
     # Сохраняем планировщик в bot_data, чтобы к нему был доступ из обработчиков (например, для snooze)
     app.bot_data["scheduler"] = scheduler
-    
+
     # Настраиваем задачи по расписанию
     setup_scheduler(scheduler, app.bot)
-    
+
     # Теперь старт пройдет успешно, так как мы внутри event loop
     scheduler.start()
-    logger.info("✅ APScheduler успешно запущен внутри цикла событий.")
+    logger.info("✅ APScheduler успешно запущен внутри цикла событий (TZ=%s).", BOT_TZ)
 
     # Регистрация команд в Telegram — появятся в меню "/" у пользователя
     base_commands = [

@@ -25,6 +25,12 @@ if not ANTHROPIC_API_KEY:
 # Установи ADMIN_USER_ID в .env — Telegram user_id владельца бота
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 0))
 
+# ─── Таймзона ────────────────────────────────────────────────────────────────
+# APScheduler-cron-расписания (SCHEDULE_MAX_*, *_TIME) интерпретируются в этой
+# зоне. Без явной TZ контейнер python:3.11-slim работает в UTC и check-ins
+# уезжают на 1-3 часа раньше локального времени пользователя.
+BOT_TZ = os.getenv("BOT_TZ", "Europe/Warsaw")
+
 # ─── Модель ───────────────────────────────────────────────────────────────────
 MODEL            = "claude-sonnet-4-20250514"
 MODEL_FOOD_PARSE = "claude-haiku-4-5-20251001"  # Haiku для парсинга еды → КБЖУ (дёшево)
@@ -47,6 +53,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "data", "trainer.db")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 PROMPTS_DIR = os.path.join(BASE_DIR, "ai", "prompts")
+
+# ─── Vision photo size limit (H3) ─────────────────────────────────────────────
+# Telegram отдаёт фото до 20 МБ; Anthropic Vision рассчитывается как ~40K
+# input tokens на 27 МБ base64 (~$0.12 за фото). Cap на 5 МБ ограничивает
+# cost-DoS: один абуз-юзер не может разорить биллинг через спам фотками.
+MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024
 
 # ─── Режим дня ────────────────────────────────────────────────────────────────
 def get_trainer_mode(day: int = None) -> str:

@@ -2,8 +2,11 @@
 bot/handlers.py — Обработчики текстовых сообщений, голосовых и callback'ов.
 """
 import os
+import time
 import logging
 import tempfile
+from collections import defaultdict, deque
+from typing import Literal
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -35,6 +38,7 @@ from bot.keyboards import (
 from config import (
     HEALTH_KEYWORDS, OPENAI_API_KEY,
     TEST_MAX_PUSHUPS, TEST_MAX_SQUATS, TEST_MAX_PLANK_SEC,
+    MAX_PHOTO_SIZE_BYTES,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,40 @@ logger = logging.getLogger(__name__)
 _AWAITING_FOOD: dict[int, str] = {}
 # Чек-ин V2: текущий слот чек-ина (evening/night) для определения контекста
 _CHECKIN_SLOT: dict[int, str] = {}
+
+# Per-user rate-limit (C4): окно 60 сек, лимит 10 сообщений.
+# При превышении: один раз отвечаем "слишком быстро", дальше silent drop
+# до тех пор, пока окно не освободится. State теряется при restart — это OK
+# для V1 (single-process bot, restart редкий).
+_RATE_LIMIT_MAX = 10
+_RATE_LIMIT_WINDOW_SEC = 60.0
+_RATE_LIMIT_WINDOW: dict[int, deque] = defaultdict(deque)
+_RATE_LIMIT_WARNED: set[int] = set()
+
+
+def _check_rate_limit(user_id: int) -> Literal["ok", "warn", "drop"]:
+    """Регистрирует сообщение пользователя и возвращает решение.
+
+    Возвращает:
+        "ok"   — обработать нормально.
+        "warn" — превышение, отправить однократное предупреждение, дальше silent.
+        "drop" — silent drop (предупреждение уже было показано в этом окне).
+    """
+    now = time.monotonic()
+    window = _RATE_LIMIT_WINDOW[user_id]
+    cutoff = now - _RATE_LIMIT_WINDOW_SEC
+    while window and window[0] < cutoff:
+        window.popleft()
+    window.append(now)
+    if len(window) <= _RATE_LIMIT_MAX:
+        if user_id in _RATE_LIMIT_WARNED:
+            _RATE_LIMIT_WARNED.discard(user_id)
+        return "ok"
+    if user_id in _RATE_LIMIT_WARNED:
+        return "drop"
+    _RATE_LIMIT_WARNED.add(user_id)
+    return "warn"
+
 
 GOAL_MAP = {
     "goal_lose": "похудеть",
@@ -451,6 +489,17 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     """Основной обработчик текстовых сообщений."""
     tg = update.effective_user
     text = update.message.text.strip()
+
+    # ── Per-user rate-limit (C4) ─────────────────────────────────────────────
+    rate_status = _check_rate_limit(tg.id)
+    if rate_status == "warn":
+        await update.message.reply_text(
+            "⏳ Слишком много сообщений за минуту. Подожди немного — я слушаю."
+        )
+        return
+    if rate_status == "drop":
+        logger.info("rate-limit drop user_id=%s", tg.id)
+        return
 
     # ── Ожидание текста рассылки (admin) ─────────────────────────────────────
     if ctx.user_data.get("admin_broadcast_pending"):
@@ -1749,6 +1798,17 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     photo = update.message.photo[-1]
     caption = (update.message.caption or "").strip()
 
+    # H3: cost-DoS guard. Telegram даёт photo.file_size; если оно есть и больше
+    # лимита — отказ до открытия Vision API (нет base64, нет Anthropic-вызова).
+    if photo.file_size and photo.file_size > MAX_PHOTO_SIZE_BYTES:
+        size_mb = photo.file_size / 1024 / 1024
+        limit_mb = MAX_PHOTO_SIZE_BYTES / 1024 / 1024
+        await update.message.reply_text(
+            f"⚠️ Фото слишком большое ({size_mb:.1f} МБ). "
+            f"Лимит — {limit_mb:.0f} МБ. Сожми изображение и отправь снова."
+        )
+        return
+
     status_msg = await update.message.reply_text("📸 Анализирую фото...")
 
     try:
@@ -1806,6 +1866,8 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         from config import MODEL
         async_client = get_async_client()
 
+        import time as _time
+        _vision_start = _time.monotonic()
         response = await async_client.messages.create(
             model=MODEL,
             max_tokens=600,
@@ -1824,6 +1886,27 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 ],
             }]
         )
+        _vision_elapsed = _time.monotonic() - _vision_start
+
+        # H4: лог в ai_usage_log с call_type="vision".
+        # До этого fix'а Vision-вызовы шли в обход log_usage и не учитывались
+        # в /admin → Расходы.
+        try:
+            from db.queries.usage import log_usage
+            usage = getattr(response, "usage", None)
+            if usage is not None and user and user.get("id"):
+                log_usage(
+                    user_id=user["id"],
+                    model=MODEL,
+                    input_tokens=getattr(usage, "input_tokens", 0) or 0,
+                    output_tokens=getattr(usage, "output_tokens", 0) or 0,
+                    cache_read=getattr(usage, "cache_read_input_tokens", 0) or 0,
+                    cache_write=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                    response_time_sec=_vision_elapsed,
+                    call_type="vision",
+                )
+        except Exception as _e:
+            logger.warning("[VISION] usage logging failed for %s: %s", tg.id, _e)
 
         reply_text = response.content[0].text.strip()
 

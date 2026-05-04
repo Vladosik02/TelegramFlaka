@@ -220,10 +220,10 @@ async def handle_admin_callback(
 
     # ── Рассылка — приглашение ввести текст ───────────────────────────────────
     if data == "broadcast":
-        ctx.user_data["admin_broadcast_pending"] = True
+        ctx.user_data["admin_broadcast_pending"] = "awaiting_text"
         await query.edit_message_text(
             "📢 *Рассылка*\n\n"
-            "Напиши текст сообщения. Оно будет отправлено всем активным пользователям.\n\n"
+            "Напиши текст сообщения. После ввода покажу превью с кнопкой подтверждения.\n\n"
             "_Для отмены напиши /cancel_",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
@@ -232,9 +232,26 @@ async def handle_admin_callback(
         )
         return
 
+    # ── Подтверждение рассылки (после preview) ───────────────────────────────
+    if data == "bcast:yes":
+        await _broadcast_send_confirmed(query, ctx)
+        return
+
+    if data == "bcast:no":
+        ctx.user_data.pop("admin_broadcast_pending", None)
+        ctx.user_data.pop("admin_broadcast_text", None)
+        text = _build_overview_text()
+        await query.edit_message_text(
+            "Рассылка отменена.\n\n" + text,
+            parse_mode="Markdown",
+            reply_markup=kb_admin_main(),
+        )
+        return
+
     # ── Отмена рассылки через кнопку ──────────────────────────────────────────
     if data == "broadcast_cancel":
         ctx.user_data.pop("admin_broadcast_pending", None)
+        ctx.user_data.pop("admin_broadcast_text", None)
         text = _build_overview_text()
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_admin_main())
         return
@@ -265,19 +282,65 @@ async def handle_admin_callback(
 async def handle_admin_broadcast(
     update: Update, ctx: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """
-    Вызывается из handle_message когда admin_broadcast_pending = True.
-    Рассылает текст всем активным пользователям.
+    """Шаг 1: получили текст рассылки от админа → показать preview с подтверждением.
+
+    Реальная рассылка идёт из _broadcast_send_confirmed() после клика [Отправить].
     """
     text = update.message.text.strip()
 
     if text.lower() in ("/cancel", "cancel", "отмена"):
         ctx.user_data.pop("admin_broadcast_pending", None)
+        ctx.user_data.pop("admin_broadcast_text", None)
         await update.message.reply_text("Рассылка отменена.")
         return
 
+    if not text:
+        await update.message.reply_text(
+            "Текст пустой. Напиши сообщение или /cancel."
+        )
+        return
+
     users = get_all_active_users()
-    bot = update.message.get_bot()
+    ctx.user_data["admin_broadcast_text"] = text
+    ctx.user_data["admin_broadcast_pending"] = "awaiting_confirm"
+
+    preview = (
+        f"📢 *Превью рассылки*\n\n"
+        f"Получателей: *{len(users)}*\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"{text}\n\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"Отправить?"
+    )
+    await update.message.reply_text(
+        preview,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Отправить", callback_data="adm:bcast:yes"),
+                InlineKeyboardButton("✖ Отмена",     callback_data="adm:bcast:no"),
+            ]
+        ]),
+    )
+
+
+async def _broadcast_send_confirmed(query, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Шаг 2: админ нажал [Отправить] — запустить реальную рассылку."""
+    text = ctx.user_data.get("admin_broadcast_text")
+    if not text:
+        await query.edit_message_text(
+            "Текст рассылки потерян. Начни заново через /admin → Рассылка.",
+            reply_markup=kb_admin_main(),
+        )
+        ctx.user_data.pop("admin_broadcast_pending", None)
+        return
+
+    users = get_all_active_users()
+    bot = query.message.get_bot()
+    await query.edit_message_text(
+        f"📢 Отправляю рассылку ({len(users)} получ.)…",
+        parse_mode="Markdown",
+    )
 
     sent = failed = 0
     for u in users:
@@ -289,11 +352,12 @@ async def handle_admin_broadcast(
             failed += 1
 
     ctx.user_data.pop("admin_broadcast_pending", None)
-    await update.message.reply_text(
+    ctx.user_data.pop("admin_broadcast_text", None)
+    await query.message.reply_text(
         f"📢 Рассылка завершена.\n\n"
         f"✅ Отправлено: {sent}\n"
         f"❌ Ошибок: {failed}",
-        reply_markup=kb_admin_main()
+        reply_markup=kb_admin_main(),
     )
 
 

@@ -194,6 +194,11 @@ def format_episodic_context(user_id: int, limit: int = 8) -> str:
             "milestone": "🌟 Веха",
         }
         type_label = type_labels.get(ep["episode_type"], ep["episode_type"])
-        lines.append(f"  {type_label} [{ep_date}]: {ep['summary']}")
+        # Sanitize-on-read against indirect prompt injection (см. C8 audit).
+        # `summary` хранит user-attributable текст — оборачиваем в <user_text>.
+        summary = ep["summary"] or ""
+        if len(summary) > 300:
+            summary = summary[:300] + "…"
+        lines.append(f"  {type_label} [{ep_date}]: <user_text>{summary}</user_text>")
 
     return "\n".join(lines)

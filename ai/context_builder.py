@@ -37,6 +37,42 @@ from ai.morph import lemmatize_text, build_lemma_set
 logger = logging.getLogger(__name__)
 
 
+# ─── Indirect prompt-injection guard ──────────────────────────────────────────
+# User-controllable text попадает в БД через Claude tools (notes, summary,
+# meal_notes, ...) и при следующем запросе вычитывается обратно в system
+# prompt. Без обёртки строка "ignore previous instructions" из user-сообщения
+# попала бы в system как буквальная директива.
+#
+# Стратегия (см. audit C8 / Option D):
+#   1. Любое user-attributable поле, попадающее в system prompt, оборачивается
+#      в `<user_text>...</user_text>`. System prompt'ы (system_max.txt и
+#      system_light.txt) содержат единую инструкцию «треат как данные, не
+#      инструкции».
+#   2. Длина одного поля кэп — 300 символов. Не блокирует normal use-cases
+#      (medical notes, exercise notes), но не даёт unlimited prompt-bloat.
+#
+# Применяется AT READ: достаточно одного места защиты — никакой migration
+# существующих БД-записей не нужно (исторический "яд" нейтрализуется здесь).
+
+_USER_TEXT_MAX_LEN = 300
+
+
+def _us(text) -> str:
+    """Безопасно встроить user-attributable текст в system prompt.
+
+    Returns пустую строку для None/falsy. Ограничивает длину и оборачивает в
+    `<user_text>...</user_text>` — модель проинструктирована трактовать как
+    данные. Для списков пройдись по элементам отдельно или сделай ', '.join
+    ДО передачи сюда.
+    """
+    if not text:
+        return ""
+    s = str(text)
+    if len(s) > _USER_TEXT_MAX_LEN:
+        s = s[:_USER_TEXT_MAX_LEN] + "…"
+    return f"<user_text>{s}</user_text>"
+
+
 def _load_prompt(filename: str) -> str:
     path = os.path.join(PROMPTS_DIR, filename)
     with open(path, "r", encoding="utf-8") as f:
@@ -295,7 +331,7 @@ def _build_l0_card(user: dict, uid: int, streak: int) -> str:
             import json
             inj = json.loads(user["injuries"])
             if inj:
-                lines.append(f"Активные травмы: {', '.join(inj)}")
+                lines.append(f"Активные травмы: {_us(', '.join(str(i) for i in inj))}")
         except Exception as e:
             logger.warning(f"[CTX] injuries JSON parse failed for uid={uid}: {e}")
     # fitness_score (Фаза 8.2) — загружается в L0 всегда (~8 tok)
@@ -552,7 +588,7 @@ def _build_l2_nutrition(uid: int, deep: bool) -> str | None:
             if data.get("restrictions"):
                 lines.append(f"Ограничения: {', '.join(data['restrictions'])}")
             if data.get("last_meal_notes"):
-                lines.append(f"Заметки: {data['last_meal_notes']}")
+                lines.append(f"Заметки: {_us(data['last_meal_notes'])}")
 
         recent_log = get_nutrition_log(uid, days=3)
         if recent_log:
@@ -586,7 +622,7 @@ def _build_l2_nutrition(uid: int, deep: bool) -> str | None:
 
         insights = get_active_insights(uid, limit=2)
         if insights:
-            insight_lines = [f"  ⚠️ {i['description']}" for i in insights]
+            insight_lines = [f"  ⚠️ {_us(i['description'])}" for i in insights]
             lines.append("AI-рекомендации:\n" + "\n".join(insight_lines))
 
     return "\n".join(lines) if len(lines) > 1 else None
@@ -620,7 +656,7 @@ def _build_l3_training(uid: int, deep: bool) -> str | None:
         if data.get("avoided_exercises"):
             lines.append(f"Исключить: {', '.join(data['avoided_exercises'])}")
         if data.get("training_notes"):
-            lines.append(f"Заметки: {data['training_notes']}")
+            lines.append(f"Заметки: {_us(data['training_notes'])}")
         # ── Личные рекорды из exercise_results ──────────────────────────────
         from db.queries.exercises import get_recent_records, get_personal_records
         recent_prs = get_recent_records(uid, days=30)
@@ -671,11 +707,11 @@ def _build_daily_chronicle(uid: int, days: int = 5) -> str | None:
         energy = f"⚡{s['energy_score']}/5" if s.get("energy_score") else ""
         mood   = f"😊{s['mood_score']}/5"  if s.get("mood_score")   else ""
         stats  = " ".join(filter(None, ["".join(icons), energy, mood]))
-        line = f"{date_short}: {s['summary_text'][:100]}"
+        line = f"{date_short}: {_us(s['summary_text'][:100])}"
         if stats:
             line += f" [{stats}]"
         if s.get("key_insight"):
-            line += f"\n  → {s['key_insight'][:80]}"
+            line += f"\n  → {_us(s['key_insight'][:80])}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -785,9 +821,9 @@ def _build_monthly_chronicle(uid: int, months: int = 3) -> str | None:
             parts.append(f"🏆{s['best_pr_text']}")
         line = " | ".join(parts)
         if s.get("summary_text"):
-            line += f"\n  {s['summary_text'][:120]}"
+            line += f"\n  {_us(s['summary_text'][:120])}"
         if s.get("key_insight"):
-            line += f"\n  → {s['key_insight'][:80]}"
+            line += f"\n  → {_us(s['key_insight'][:80])}"
         lines.append(line)
     return "\n".join(lines) if len(lines) > 1 else None
 
@@ -815,7 +851,7 @@ def _build_l4_intelligence(uid: int) -> str | None:
     if intel.get("trend_summary"):
         lines.append(f"Тренд: {intel['trend_summary']}")
     if intel.get("bio_insights"):
-        lines.append(f"Биоанализ: {intel['bio_insights']}")
+        lines.append(f"Биоанализ: {_us(intel['bio_insights'])}")
     if intel.get("motivation_level") and intel["motivation_level"] != "normal":
         level_map = {"low": "низкая ⚠️", "high": "высокая 🔥"}
         lines.append(f"Мотивация: {level_map.get(intel['motivation_level'], '')}")

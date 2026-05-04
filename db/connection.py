@@ -38,9 +38,14 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         try:
             conn.execute(sql)
             conn.commit()
-            logger.info(f"Migration applied: {sql[:60]}...")
-        except Exception:
-            pass  # колонка уже существует — норма
+            logger.info("Migration applied: %s...", sql[:60])
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                logger.debug("Migration skipped (already applied): %s...", sql[:60])
+                continue
+            logger.error("Migration FAILED: %s — %s", sql[:60], e)
+            raise
 
 
 def init_db() -> None:
