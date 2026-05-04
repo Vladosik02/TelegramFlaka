@@ -25,6 +25,12 @@ if not ANTHROPIC_API_KEY:
 # Установи ADMIN_USER_ID в .env — Telegram user_id владельца бота
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 0))
 
+# ─── Таймзона ────────────────────────────────────────────────────────────────
+# APScheduler-cron-расписания (SCHEDULE_MAX_*, *_TIME) интерпретируются в этой
+# зоне. Без явной TZ контейнер python:3.11-slim работает в UTC и check-ins
+# уезжают на 1-3 часа раньше локального времени пользователя.
+BOT_TZ = os.getenv("BOT_TZ", "Europe/Warsaw")
+
 # ─── Модель ───────────────────────────────────────────────────────────────────
 MODEL            = "claude-sonnet-4-20250514"
 MODEL_FOOD_PARSE = "claude-haiku-4-5-20251001"  # Haiku для парсинга еды → КБЖУ (дёшево)
