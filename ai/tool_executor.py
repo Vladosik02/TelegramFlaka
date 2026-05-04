@@ -13,6 +13,20 @@ ai/tool_executor.py — Исполнитель инструментов Claude T
 """
 
 import json
+
+
+# Максимальная длина user-attributable текстовых полей при записи в БД.
+# Vторая линия защиты от prompt-injection (первая — sanitize-on-read в
+# context_builder._us). Также ограничивает prompt-bloat: 5 полей × 500 = ≤2.5K
+# символов на сообщение, что укладывается в context window. См. audit C8.
+_MAX_FIELD_LEN = 500
+
+
+def _cap(text, max_len: int = _MAX_FIELD_LEN):
+    """Обрезает строку до max_len. Для None/non-str — passthrough без изменений."""
+    if not isinstance(text, str):
+        return text
+    return text[:max_len]
 import logging
 import datetime
 from typing import Any
@@ -158,7 +172,7 @@ async def _tool_save_workout(tg_id: int, inp: dict, **kwargs) -> dict:
         duration_min=inp.get("duration_min"),
         intensity=inp.get("intensity"),
         exercises=json.dumps(exercises, ensure_ascii=False) if exercises else None,
-        notes=inp.get("notes"),
+        notes=_cap(inp.get("notes")),
         completed=True,
     )
 
@@ -199,7 +213,7 @@ async def _tool_save_metrics(tg_id: int, inp: dict, **kwargs) -> dict:
         mood=inp.get("mood"),
         water_liters=inp.get("water_liters"),
         steps=inp.get("steps"),
-        notes=inp.get("notes"),
+        notes=_cap(inp.get("notes")),
     )
 
     # Если сохранили вес — записываем эпизод в память
@@ -300,7 +314,7 @@ async def _tool_save_exercise_result(tg_id: int, inp: dict, **kwargs) -> dict:
         reps=inp.get("reps"),
         duration_sec=inp.get("duration_sec"),
         weight_kg=inp.get("weight_kg"),
-        notes=inp.get("notes"),
+        notes=_cap(inp.get("notes")),
     )
 
     # ── Feedback loop: захват предсказания рядом с фактом ──────────────
@@ -585,7 +599,7 @@ async def _tool_save_episode(tg_id: int, inp: dict, **kwargs) -> dict:
     ep_id = save_episode(
         user_id=user["id"],
         episode_type=episode_type,
-        summary=inp["summary"],
+        summary=_cap(inp["summary"]),
         tags=inp.get("tags", []),
         importance=inp.get("importance", 5),
         ttl_days=ttl,
