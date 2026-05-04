@@ -48,6 +48,12 @@ DB_PATH = os.path.join(BASE_DIR, "data", "trainer.db")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 PROMPTS_DIR = os.path.join(BASE_DIR, "ai", "prompts")
 
+# ─── Vision photo size limit (H3) ─────────────────────────────────────────────
+# Telegram отдаёт фото до 20 МБ; Anthropic Vision рассчитывается как ~40K
+# input tokens на 27 МБ base64 (~$0.12 за фото). Cap на 5 МБ ограничивает
+# cost-DoS: один абуз-юзер не может разорить биллинг через спам фотками.
+MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024
+
 # ─── Режим дня ────────────────────────────────────────────────────────────────
 def get_trainer_mode(day: int = None) -> str:
     """MAX — нечётные дни, LIGHT — чётные."""
