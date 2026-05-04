@@ -50,8 +50,11 @@ def _create_in_memory_db() -> sqlite3.Connection:
         try:
             conn.execute(sql)
             conn.commit()
-        except Exception:
-            pass  # колонка уже существует — норма
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                continue
+            raise
 
     conn.commit()
     return conn
